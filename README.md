@@ -31,6 +31,14 @@ To remove: `stt uninstall && cargo uninstall stt`.
 
 Audio is streamed to ElevenLabs while recording; nothing is saved locally. Logs are at `$XDG_RUNTIME_DIR/stt/stt.log`.
 
+## Testing
+
+```sh
+cargo test
+```
+
+Unit tests cover audio levels and the protocol messages. `tests/e2e.rs` runs the real `stt` binary end to end: a local WebSocket server plays ElevenLabs (via `STT_ELEVENLABS_URL`), and fake `pw-record` / `wtype` scripts on `PATH` stand in for the microphone and keyboard. The tests run headless, with no overlay window or notifications.
+
 ## Layout
 
 - `src/main.rs`: CLI, toggle via PID file and `SIGUSR2`, the recording session
