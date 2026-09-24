@@ -1,4 +1,6 @@
+#!/usr/bin/env bun
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 const runtime = join(process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`, "stt");
@@ -6,6 +8,11 @@ const pidFile = join(runtime, "recording.pid");
 const logFile = join(runtime, "stt.log");
 const root = import.meta.dir.replace(/\/src$/, "");
 const model = "scribe_v2_realtime";
+const hyprDir = join(homedir(), ".config/hypr");
+const hyprConfig = join(hyprDir, "hyprland.lua");
+const bindingFile = join(hyprDir, "stt.lua");
+const sourceLine = `require("hypr.stt")`;
+const binding = `o.bind("END", "Toggle live speech to text", "stt toggle")\n`;
 
 async function notify(title: string, body: string, timeout = 1500): Promise<void> {
   const proc = Bun.spawn(["notify-send", "-a", "stt", "-r", "47511", "-t", String(timeout), title, body], { stdout: "ignore", stderr: "ignore" });
@@ -16,7 +23,8 @@ async function existingPid(): Promise<number | null> {
   try {
     const pid = Number((await readFile(pidFile, "utf8")).trim());
     if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
+    const args = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
+    if (!args.some(arg => arg.endsWith("main.ts")) || !args.includes("record")) return null;
     return pid;
   } catch {
     return null;
@@ -122,12 +130,38 @@ async function record(): Promise<void> {
   }
 }
 
+async function reloadHyprland(): Promise<void> {
+  const proc = Bun.spawn(["hyprctl", "reload"], { stdout: "ignore", stderr: "inherit" });
+  if (await proc.exited !== 0) throw new Error("hyprctl reload failed");
+}
+
+async function install(): Promise<void> {
+  await writeFile(bindingFile, binding);
+  const config = await readFile(hyprConfig, "utf8");
+  if (!config.split("\n").some(line => line.trim() === sourceLine)) {
+    await writeFile(hyprConfig, `${config}${config.endsWith("\n") ? "" : "\n"}${sourceLine}\n`);
+  }
+  await reloadHyprland();
+  console.log(`Installed End binding in ${bindingFile}`);
+}
+
+async function uninstall(): Promise<void> {
+  const lines = (await readFile(hyprConfig, "utf8")).split("\n");
+  const kept = lines.filter(line => line.trim() !== sourceLine);
+  if (kept.length !== lines.length) await writeFile(hyprConfig, kept.join("\n"));
+  await rm(bindingFile, { force: true });
+  await reloadHyprland();
+  console.log("Removed End binding");
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "toggle";
+  if (command === "install") { await install(); return; }
+  if (command === "uninstall") { await uninstall(); return; }
   await mkdir(runtime, { recursive: true });
   if (command === "record") { await record(); return; }
   if (command === "status") { console.log((await existingPid()) ? "recording" : "idle"); return; }
-  if (command !== "toggle") throw new Error("Usage: stt [toggle|status|record]");
+  if (command !== "toggle") throw new Error("Usage: stt [toggle|status|record|install|uninstall]");
   const pid = await existingPid();
   if (pid) { process.kill(pid, "SIGUSR2"); return; }
   await rm(pidFile, { force: true });
