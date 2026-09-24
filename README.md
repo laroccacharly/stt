@@ -1,12 +1,40 @@
 # stt
 
-Live ElevenLabs Scribe dictation for Omarchy. Press **End** to start; press it again to finish. Notifications show when dictation starts and finishes. Committed text is typed into the focused application as it arrives.
+Live ElevenLabs Scribe dictation for Omarchy / Hyprland. Press **End** to start; press it again to finish. Committed text is typed into the focused window as it arrives, and a waveform overlay at the bottom of the screen shows your voice while recording (grey while connecting, blue→purple while listening, green while finishing).
 
 ## Requirements
 
-- Bun, PipeWire `pw-record`, `wtype`, and `notify-send`.
-- An ElevenLabs API key with speech-to-text access. The app reads `ELEVENLABS_API_KEY` or the existing `cterm` Bun keychain entry.
+- Rust (`rustup` or `pacman -S rust`)
+- PipeWire `pw-record`, `wtype`, a notification daemon (mako on Omarchy)
+- A Wayland compositor with `wlr-layer-shell` (Hyprland)
+- An ElevenLabs API key with speech-to-text access, from `ELEVENLABS_API_KEY` or the `cterm` entry in the Secret Service keyring (gnome-keyring)
 
-Run `bun install && bun link`, then `stt install` to bind End in Hyprland (`stt uninstall` removes it). Other commands: `stt toggle`, `stt status`.
+## Install
 
-Audio is streamed to ElevenLabs while recording. No audio is saved locally. Logs are at `$XDG_RUNTIME_DIR/stt/stt.log`.
+```sh
+cargo install --path .    # builds a release binary into ~/.cargo/bin/stt
+stt install               # binds End in Hyprland (~/.config/hypr/stt.lua)
+```
+
+`~/.cargo/bin` must be on your `PATH` (it is on Omarchy). After changing the code, run `cargo install --path .` again.
+
+To remove: `stt uninstall && cargo uninstall stt`.
+
+## Usage
+
+| Command         | What it does                                   |
+| --------------- | ---------------------------------------------- |
+| `stt` / `stt toggle` | Start dictation, or stop the running one  |
+| `stt status`    | Print `recording` or `idle`                    |
+| `stt record`    | Run a session in the foreground (for debugging) |
+| `stt demo`      | Show the overlay with fake audio               |
+
+Audio is streamed to ElevenLabs while recording; nothing is saved locally. Logs are at `$XDG_RUNTIME_DIR/stt/stt.log`.
+
+## Layout
+
+- `src/main.rs`: CLI, toggle via PID file and `SIGUSR2`, the recording session
+- `src/audio.rs`: microphone capture (`pw-record`) and loudness
+- `src/elevenlabs.rs`: API key lookup and the realtime WebSocket protocol
+- `src/overlay.rs`: layer-shell waveform (smithay-client-toolkit + tiny-skia) on its own thread
+- `src/hyprland.rs`: installing the key binding
