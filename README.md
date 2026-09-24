@@ -1,6 +1,6 @@
 # stt
 
-Live ElevenLabs Scribe dictation for Omarchy. Press **End** to start; press it again to finish. Partial text appears in a replaceable notification. Committed text is typed into the focused application as it arrives.
+Live ElevenLabs Scribe dictation for Omarchy. Press **End** to start; press it again to finish. Notifications show when dictation starts and finishes. Committed text is typed into the focused application as it arrives.
 
 ## Requirements
 

@@ -62,7 +62,6 @@ async function record(): Promise<void> {
       socket.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: pending ? Buffer.from(pending).toString("base64") : "", commit: true }));
       setTimeout(finish, 4500);
     } else finish();
-    void notify("STT", "Finishing transcript…");
   };
   process.on("SIGUSR2", stop);
   process.on("SIGINT", stop);
@@ -96,8 +95,6 @@ async function record(): Promise<void> {
         const data = JSON.parse(String(event.data)) as { message_type: string; text?: string; error?: string };
         if (data.message_type === "session_started") {
           console.log("ElevenLabs transcription session started");
-        } else if (data.message_type === "partial_transcript" && data.text && !stopped) {
-          void notify("STT live", `${committed}${data.text}`.slice(-300));
         } else if (data.message_type === "committed_transcript") {
           const text = data.text?.trim();
           if (text) {
@@ -117,7 +114,7 @@ async function record(): Promise<void> {
     socket.addEventListener("close", () => finish());
     await finished;
     await typeQueue;
-    if (committed) await notify("STT complete", committed.slice(-300), 2500);
+    await notify("STT finished", committed ? "Dictation inserted" : "No speech detected", 2500);
   } finally {
     recorder?.kill("SIGTERM");
     socket?.close();
