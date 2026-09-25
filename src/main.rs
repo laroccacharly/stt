@@ -32,6 +32,8 @@ use overlay::{Event, Overlay, Phase};
 const FINISH_TIMEOUT: Duration = Duration::from_millis(4500);
 /// Notifications share one id so each replaces the previous.
 const NOTIFICATION_ID: u32 = 47511;
+/// Start/stop notifications are off for now; errors always notify.
+const ENABLE_STATUS_NOTIFICATIONS: bool = false;
 
 #[derive(Parser)]
 #[command(version, about = "Live speech to text for Hyprland")]
@@ -200,7 +202,9 @@ async fn session(overlay: &Overlay) -> Result<()> {
     eprintln!("ElevenLabs WebSocket connected");
     let mut mic = Microphone::start()?;
     overlay.send(Event::Phase(Phase::Listening));
-    notify("STT recording", "Speak now; press End again to stop", 2500);
+    if ENABLE_STATUS_NOTIFICATIONS {
+        notify("STT recording", "Speak now; press End again to stop", 2500);
+    }
 
     let typist = Typist::spawn();
     let mut typed_any = false;
@@ -252,17 +256,19 @@ async fn session(overlay: &Overlay) -> Result<()> {
     .await;
     tx.close().await;
     typist.finish().await;
-    notify(
-        "STT finished",
-        if typed_any {
-            "Dictation inserted"
-        } else {
-            "No speech detected"
-        },
-        2500,
-    )
-    .join()
-    .ok();
+    if ENABLE_STATUS_NOTIFICATIONS {
+        notify(
+            "STT finished",
+            if typed_any {
+                "Dictation inserted"
+            } else {
+                "No speech detected"
+            },
+            2500,
+        )
+        .join()
+        .ok();
+    }
     Ok(())
 }
 
