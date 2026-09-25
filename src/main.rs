@@ -53,6 +53,9 @@ enum Cmd {
     /// Copy API keys from the environment (ELEVENLABS_API_KEY,
     /// OPENROUTER_API_KEY) into the keyring.
     Login,
+    /// List or choose the transcription provider.
+    #[command(subcommand)]
+    Provider(ProviderCmd),
     /// Bind End to `stt toggle` in Hyprland.
     Install,
     /// Remove the End binding.
@@ -60,6 +63,17 @@ enum Cmd {
     /// Show the overlay with synthetic audio, for testing.
     #[command(hide = true)]
     Demo,
+}
+
+#[derive(Subcommand)]
+enum ProviderCmd {
+    /// List providers, marking the one in use.
+    Ls,
+    /// Use this provider from now on.
+    Set {
+        #[arg(value_enum)]
+        provider: Provider,
+    },
 }
 
 struct Paths {
@@ -121,6 +135,19 @@ fn run(command: Cmd) -> Result<()> {
         }
         Cmd::Record => tokio::runtime::Runtime::new()?.block_on(record(&paths)),
         Cmd::Login => login(),
+        Cmd::Provider(ProviderCmd::Ls) => {
+            let current = Provider::current()?;
+            for provider in Provider::ALL {
+                let marker = if provider == current { "*" } else { " " };
+                println!("{marker} {}", provider.name());
+            }
+            Ok(())
+        }
+        Cmd::Provider(ProviderCmd::Set { provider }) => {
+            provider.save()?;
+            println!("Using {}", provider.label());
+            Ok(())
+        }
         Cmd::Install => hyprland::install(),
         Cmd::Uninstall => hyprland::uninstall(),
         Cmd::Demo => {
@@ -219,7 +246,7 @@ async fn record(paths: &Paths) -> Result<()> {
 }
 
 async fn session(overlay: &Overlay) -> Result<()> {
-    match Provider::from_env()? {
+    match Provider::current()? {
         Provider::ElevenLabs => realtime_session(overlay).await,
         Provider::OpenRouter => batch_session(overlay).await,
     }

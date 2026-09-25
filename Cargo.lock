@@ -1133,6 +1133,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "json-store"
+version = "0.1.0"
+source = "git+https://github.com/laroccacharly/json-store#4e04668949b6c6048bfa58b2af8fe71deea97cc6"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1922,12 +1934,13 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stt"
-version = "0.3.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "base64",
  "clap",
  "futures-util",
+ "json-store",
  "notify-rust",
  "reqwest",
  "rustix",

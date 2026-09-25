@@ -3,28 +3,48 @@
 pub mod elevenlabs;
 pub mod openrouter;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use clap::ValueEnum;
 use secret_service::{EncryptionType, SecretService};
+use serde::{Deserialize, Serialize};
 
-/// Which backend transcribes, chosen with `STT_PROVIDER`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which backend transcribes: the one chosen with `stt provider set`, else
+/// ElevenLabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Provider {
     /// Realtime: text is typed while you speak.
+    #[value(name = "elevenlabs")]
     ElevenLabs,
     /// Batch: the recording is transcribed once you stop.
+    #[value(name = "openrouter")]
     OpenRouter,
 }
 
 impl Provider {
     pub const ALL: [Self; 2] = [Self::ElevenLabs, Self::OpenRouter];
 
-    pub fn from_env() -> Result<Self> {
-        match std::env::var("STT_PROVIDER").unwrap_or_default().as_str() {
-            "" | "elevenlabs" => Ok(Self::ElevenLabs),
-            "openrouter" => Ok(Self::OpenRouter),
-            other => bail!("Unknown STT_PROVIDER {other:?}; use elevenlabs or openrouter"),
+    /// The provider in use now.
+    pub fn current() -> Result<Self> {
+        let config: Option<Config> =
+            json_store::read_opt(&config_path()?).context("reading the stt config")?;
+        Ok(config.map_or(Self::ElevenLabs, |config| config.provider))
+    }
+
+    /// Makes this the provider used from now on.
+    pub fn save(self) -> Result<()> {
+        json_store::write(&config_path()?, &Config { provider: self })
+            .context("saving the stt config")?;
+        Ok(())
+    }
+
+    /// The name used on the command line and in the config.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ElevenLabs => "elevenlabs",
+            Self::OpenRouter => "openrouter",
         }
     }
 
@@ -42,6 +62,21 @@ impl Provider {
             Self::OpenRouter => "OpenRouter",
         }
     }
+}
+
+/// Settings saved by `stt provider set`.
+#[derive(Serialize, Deserialize)]
+struct Config {
+    provider: Provider,
+}
+
+/// `$XDG_CONFIG_HOME/stt/config.json`.
+fn config_path() -> Result<PathBuf> {
+    let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".config"),
+    };
+    Ok(base.join("stt/config.json"))
 }
 
 /// Keyring service for keys saved with `stt login`.

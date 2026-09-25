@@ -177,6 +177,7 @@ impl Sandbox {
             .args(args)
             .env("PATH", path)
             .env("XDG_RUNTIME_DIR", self.dir.path().join("runtime"))
+            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("ELEVENLABS_API_KEY", KEY)
             .env("STT_ELEVENLABS_URL", &self.server_url)
             .env("STT_TYPED", self.typed_path())
@@ -446,10 +447,15 @@ async fn fake_openrouter(status: u16, reply: Value) -> (String, JoinHandle<HttpR
 fn openrouter_sandbox(url: String) -> Sandbox {
     let mut sandbox = Sandbox::new("ws://127.0.0.1:9".into());
     sandbox.extra_env = vec![
-        ("STT_PROVIDER", "openrouter".into()),
         ("OPENROUTER_API_KEY", KEY.into()),
         ("STT_OPENROUTER_URL", url),
     ];
+    assert!(
+        sandbox
+            .stt(&["provider", "set", "openrouter"])
+            .status
+            .success()
+    );
     sandbox
 }
 
@@ -520,4 +526,25 @@ fn login_without_env_keys_fails_without_touching_keyring() {
         stdout.contains("OPENROUTER_API_KEY not set; skipped"),
         "{stdout}"
     );
+}
+
+#[test]
+fn provider_set_is_remembered_and_listed() {
+    let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
+    let ls =
+        |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
+    assert_eq!(ls(&sandbox), "* elevenlabs\n  openrouter\n");
+
+    let set = sandbox.stt(&["provider", "set", "openrouter"]);
+    assert!(set.status.success());
+    assert_eq!(String::from_utf8_lossy(&set.stdout), "Using OpenRouter\n");
+    assert_eq!(ls(&sandbox), "  elevenlabs\n* openrouter\n");
+    let config: Value = serde_json::from_str(
+        &fs::read_to_string(sandbox.dir.path().join("config/stt/config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(config, json!({"provider": "openrouter"}));
+
+    assert!(!sandbox.stt(&["provider", "set", "nope"]).status.success());
+    assert_eq!(ls(&sandbox), "  elevenlabs\n* openrouter\n");
 }

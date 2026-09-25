@@ -1,6 +1,6 @@
 [package]
 name = "stt"
-version = "0.3.0"
+version = "0.4.1"
 edition = "2024"
 
 [dependencies]
@@ -8,6 +8,7 @@ anyhow = "1.0.104"
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 futures-util = "0.3.34"
+json-store = { git = "https://github.com/laroccacharly/json-store" }
 notify-rust = "4.18.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider"] }
 rustix = { version = "1.1.5", features = ["process"] }
