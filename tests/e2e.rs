@@ -33,6 +33,10 @@ enum Script {
     Dictation,
     /// Rejects the session with an error message.
     AuthError,
+    /// Like `Dictation`, but answers the final commit with an error.
+    FinalError,
+    /// Like `Dictation`, but never answers the final commit.
+    NoFinal,
 }
 
 /// What the fake server observed.
@@ -77,7 +81,7 @@ async fn fake_elevenlabs(
                 .unwrap();
                 return seen;
             }
-            Script::Dictation => {
+            Script::Dictation | Script::FinalError | Script::NoFinal => {
                 ws.send(send(json!({"message_type": "session_started"})))
                     .await
                     .unwrap();
@@ -100,11 +104,14 @@ async fn fake_elevenlabs(
             }
             if chunk["commit"] == true {
                 seen.committed = true;
-                ws.send(send(
-                    json!({"message_type": "committed_transcript", "text": " goodbye "}),
-                ))
-                .await
-                .unwrap();
+                let reply = match script {
+                    Script::FinalError => {
+                        json!({"message_type": "transcriber_error", "error": "boom"})
+                    }
+                    Script::NoFinal => continue,
+                    _ => json!({"message_type": "committed_transcript", "text": " goodbye "}),
+                };
+                ws.send(send(reply)).await.unwrap();
             }
         }
         seen
@@ -250,10 +257,88 @@ async fn server_error_ends_session_and_cleans_up() {
     assert_eq!(sandbox.status(), "idle");
     assert_eq!(sandbox.typed(), "");
     assert!(
-        sandbox.log().contains("ElevenLabs: invalid key"),
+        sandbox
+            .log()
+            .contains("notify: STT error: ElevenLabs: invalid key"),
         "log:\n{}",
         sandbox.log()
     );
+}
+
+/// Records one live segment, stops, and returns the log once the recorder exits.
+async fn dictate_and_stop(script: Script) -> (Sandbox, String) {
+    let (url, _server, mut events) = fake_elevenlabs(script).await;
+    let sandbox = Sandbox::new(url);
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    assert_eq!(events.recv().await, Some("first_commit"));
+    sandbox
+        .wait_until("live typing", || sandbox.typed() == "hello world|")
+        .await;
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    sandbox
+        .wait_until("recorder exit", || !sandbox.pid_file().exists())
+        .await;
+    let log = sandbox.log();
+    (sandbox, log)
+}
+
+#[tokio::test]
+async fn error_on_final_commit_is_notified() {
+    let (sandbox, log) = dictate_and_stop(Script::FinalError).await;
+    assert!(
+        log.contains("notify: STT error: ElevenLabs: boom"),
+        "log:\n{log}"
+    );
+    assert_eq!(sandbox.typed(), "hello world|");
+}
+
+#[tokio::test]
+async fn missing_final_transcript_is_notified() {
+    let (_sandbox, log) = dictate_and_stop(Script::NoFinal).await;
+    assert!(
+        log.contains("notify: STT error: ElevenLabs sent no final transcript"),
+        "log:\n{log}"
+    );
+}
+
+#[tokio::test]
+async fn microphone_dying_is_notified() {
+    let (url, _server, _events) = fake_elevenlabs(Script::Dictation).await;
+    let sandbox = Sandbox::new(url);
+    script(&sandbox.dir.path().join("bin"), "pw-record", "exit 1");
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    sandbox
+        .wait_until("recorder exit", || !sandbox.pid_file().exists())
+        .await;
+    let log = sandbox.log();
+    assert!(
+        log.contains("notify: STT error: Microphone stopped unexpectedly"),
+        "log:\n{log}"
+    );
+}
+
+#[tokio::test]
+async fn typing_failure_is_notified() {
+    let (url, _server, mut events) = fake_elevenlabs(Script::Dictation).await;
+    let sandbox = Sandbox::new(url);
+    script(
+        &sandbox.dir.path().join("bin"),
+        "wtype",
+        "echo 'no focused window' >&2; exit 1",
+    );
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    assert_eq!(events.recv().await, Some("first_commit"));
+    sandbox
+        .wait_until("typing failure", || {
+            sandbox
+                .log()
+                .contains("notify: STT typing failed: no focused window")
+        })
+        .await;
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    sandbox
+        .wait_until("recorder exit", || !sandbox.pid_file().exists())
+        .await;
 }
 
 #[tokio::test]
@@ -277,10 +362,19 @@ async fn tls_failure_is_reported_not_a_crash() {
     });
     let sandbox = Sandbox::new(format!("wss://127.0.0.1:{port}"));
 
-    assert!(sandbox.stt(&["toggle"]).status.success(), "log:\n{}", sandbox.log());
-    sandbox.wait_until("recorder exit", || !sandbox.pid_file().exists()).await;
+    assert!(
+        sandbox.stt(&["toggle"]).status.success(),
+        "log:\n{}",
+        sandbox.log()
+    );
+    sandbox
+        .wait_until("recorder exit", || !sandbox.pid_file().exists())
+        .await;
 
     let log = sandbox.log();
-    assert!(log.contains("ElevenLabs connection failed"), "log:\n{log}");
+    assert!(
+        log.contains("notify: STT error: ElevenLabs connection failed"),
+        "log:\n{log}"
+    );
     assert!(!log.contains("panicked"), "log:\n{log}");
 }

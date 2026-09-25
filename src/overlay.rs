@@ -79,6 +79,11 @@ pub struct Overlay {
     thread: Option<JoinHandle<()>>,
 }
 
+/// The overlay is cosmetic: dictation carries on without it.
+fn overlay_failed(error: &str) {
+    crate::notify("STT overlay failed", error, 4000);
+}
+
 impl Overlay {
     pub fn spawn() -> Self {
         let (tx, rx) = channel::channel();
@@ -86,10 +91,10 @@ impl Overlay {
             .name("overlay".into())
             .spawn(move || {
                 if let Err(error) = run(rx) {
-                    eprintln!("overlay: {error:#}");
+                    overlay_failed(&format!("{error:#}"));
                 }
             })
-            .map_err(|error| eprintln!("overlay: {error}"))
+            .map_err(|error| overlay_failed(&error.to_string()))
             .ok();
         Self {
             tx: Some(tx),
@@ -300,7 +305,7 @@ impl State {
             self.pool
                 .create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
         else {
-            eprintln!("overlay: failed to allocate buffer");
+            overlay_failed("failed to allocate buffer");
             self.exit = true;
             return;
         };

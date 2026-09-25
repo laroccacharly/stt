@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use rustix::process::{Pid, Signal, kill_process};
 use tokio::{
@@ -95,7 +95,6 @@ impl Paths {
 fn main() {
     let cli = Cli::parse();
     if let Err(error) = run(cli.command.unwrap_or(Cmd::Toggle)) {
-        eprintln!("{error:#}");
         let _ = notify("STT error", &format!("{error:#}"), 5000).join();
         std::process::exit(1);
     }
@@ -223,7 +222,7 @@ async fn session(overlay: &Overlay) -> Result<()> {
                         tx.send_audio(&previous, false).await?;
                     }
                 }
-                None => break,
+                None => bail!("Microphone stopped unexpectedly (pw-record exited)"),
             },
             update = rx.next() => match update.transpose()? {
                 Some(Update::Committed(text)) => typed_any |= typist.type_text(text),
@@ -238,24 +237,25 @@ async fn session(overlay: &Overlay) -> Result<()> {
     tx.send_audio(pending.as_deref().unwrap_or_default(), true)
         .await?;
     // Wait for the transcript of the final commit, but not forever.
-    let _ = timeout(FINISH_TIMEOUT, async {
+    let finished = timeout(FINISH_TIMEOUT, async {
         while let Some(update) = rx.next().await {
-            match update {
-                Ok(Update::Committed(text)) => {
-                    typed_any |= typist.type_text(text);
-                    break;
-                }
-                Ok(Update::Other) => {}
-                Err(error) => {
-                    eprintln!("{error:#}");
-                    break;
-                }
+            if let Update::Committed(text) = update? {
+                typed_any |= typist.type_text(text);
+                return Ok(());
             }
         }
+        bail!("ElevenLabs closed the connection before the final transcript")
     })
-    .await;
+    .await
+    .unwrap_or_else(|_| {
+        Err(anyhow!(
+            "ElevenLabs sent no final transcript; the end may be missing"
+        ))
+    });
     tx.close().await;
     typist.finish().await;
+    // Typed what we could; now report the failure.
+    finished?;
     if ENABLE_STATUS_NOTIFICATIONS {
         notify(
             "STT finished",
@@ -295,18 +295,14 @@ impl Typist {
                     Ok(output) if output.status.success() => {}
                     Ok(output) => {
                         let error = String::from_utf8_lossy(&output.stderr);
-                        eprintln!("wtype failed: {error}");
-                        notify(
-                            "STT typing failed",
-                            if error.is_empty() {
-                                "Check the focused window"
-                            } else {
-                                &error
-                            },
-                            4000,
-                        );
+                        typing_failed(if error.is_empty() {
+                            "Check the focused window"
+                        } else {
+                            &error
+                        })
+                        .await;
                     }
-                    Err(error) => eprintln!("wtype failed: {error}"),
+                    Err(error) => typing_failed(&format!("wtype: {error}")).await,
                 }
             }
         });
@@ -328,10 +324,18 @@ impl Typist {
     }
 }
 
+/// Reports a typing failure and waits for the notification to go out, so it
+/// isn't lost if the session ends right after.
+async fn typing_failed(error: &str) {
+    let handle = notify("STT typing failed", error, 4000);
+    let _ = tokio::task::spawn_blocking(move || handle.join()).await;
+}
+
 /// Shows a desktop notification from a plain OS thread: notify-rust blocks on
 /// D-Bus, which panics inside the Tokio runtime. Join the handle when the
 /// notification must go out before the process exits.
 fn notify(summary: &str, body: &str, timeout_ms: u32) -> thread::JoinHandle<()> {
+    eprintln!("notify: {summary}: {body}");
     let mut notification = notify_rust::Notification::new();
     notification
         .appname("stt")
