@@ -500,3 +500,24 @@ async fn openrouter_error_is_notified() {
     );
     assert_eq!(sandbox.typed(), "");
 }
+
+#[test]
+fn login_without_env_keys_fails_without_touching_keyring() {
+    let output = Command::new(env!("CARGO_BIN_EXE_stt"))
+        .arg("login")
+        .env_remove("ELEVENLABS_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("ELEVENLABS_API_KEY not set; skipped"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("OPENROUTER_API_KEY not set; skipped"),
+        "{stdout}"
+    );
+}

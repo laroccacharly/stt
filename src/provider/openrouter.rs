@@ -12,7 +12,7 @@ const MODEL: &str = "microsoft/mai-transcribe-2";
 
 /// Reads `OPENROUTER_API_KEY` from the environment or the keyring.
 pub async fn api_key() -> Result<String> {
-    super::api_key("OPENROUTER_API_KEY", "OpenRouter").await
+    super::api_key(super::Provider::OpenRouter).await
 }
 
 #[derive(Deserialize)]

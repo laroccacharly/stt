@@ -7,7 +7,7 @@ Live ElevenLabs dictation for Hyprland. Press **End** to start and again to stop
 - Rust
 - `pw-record` (PipeWire), `wtype`, a notification daemon
 - Hyprland (or another compositor with `wlr-layer-shell`)
-- An ElevenLabs API key in `ELEVENLABS_API_KEY` (or the `cterm` keyring entry)
+- An API key in `ELEVENLABS_API_KEY` or `OPENROUTER_API_KEY`; run `stt login` to save it in the keyring
 
 ## Install
 

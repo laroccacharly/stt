@@ -50,6 +50,9 @@ enum Cmd {
     Status,
     /// Run a dictation session in the foreground.
     Record,
+    /// Copy API keys from the environment (ELEVENLABS_API_KEY,
+    /// OPENROUTER_API_KEY) into the keyring.
+    Login,
     /// Bind End to `stt toggle` in Hyprland.
     Install,
     /// Remove the End binding.
@@ -117,6 +120,7 @@ fn run(command: Cmd) -> Result<()> {
             Ok(())
         }
         Cmd::Record => tokio::runtime::Runtime::new()?.block_on(record(&paths)),
+        Cmd::Login => login(),
         Cmd::Install => hyprland::install(),
         Cmd::Uninstall => hyprland::uninstall(),
         Cmd::Demo => {
@@ -124,6 +128,28 @@ fn run(command: Cmd) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn login() -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let mut saved = 0;
+    for provider in Provider::ALL {
+        let name = provider.key_name();
+        let Some(key) = std::env::var(name)
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+        else {
+            println!("{name} not set; skipped");
+            continue;
+        };
+        runtime.block_on(provider::save_api_key(provider, key.trim()))?;
+        println!("Saved {} API key to the keyring", provider.label());
+        saved += 1;
+    }
+    if saved == 0 {
+        bail!("No API keys in the environment: set ELEVENLABS_API_KEY or OPENROUTER_API_KEY");
+    }
+    Ok(())
 }
 
 fn toggle(paths: &Paths) -> Result<()> {

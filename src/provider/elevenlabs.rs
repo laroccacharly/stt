@@ -21,7 +21,7 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Reads `ELEVENLABS_API_KEY` from the environment or the keyring.
 pub async fn api_key() -> Result<String> {
-    super::api_key("ELEVENLABS_API_KEY", "ElevenLabs").await
+    super::api_key(super::Provider::ElevenLabs).await
 }
 
 pub struct Sender(SplitSink<Socket, Message>);
