@@ -1,9 +1,9 @@
-//! Live ElevenLabs dictation for Hyprland.
+//! Live dictation for Hyprland, via ElevenLabs or OpenRouter.
 
 mod audio;
-mod elevenlabs;
 mod hyprland;
 mod overlay;
+mod provider;
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -25,8 +25,8 @@ use tokio::{
 };
 
 use audio::Microphone;
-use elevenlabs::Update;
 use overlay::{Event, Overlay, Phase};
+use provider::{Provider, elevenlabs, elevenlabs::Update, openrouter};
 
 /// How long to wait for the final transcript after stopping.
 const FINISH_TIMEOUT: Duration = Duration::from_millis(4500);
@@ -193,9 +193,83 @@ async fn record(paths: &Paths) -> Result<()> {
 }
 
 async fn session(overlay: &Overlay) -> Result<()> {
-    let mut stop = signal(SignalKind::user_defined2())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
+    match Provider::from_env()? {
+        Provider::ElevenLabs => realtime_session(overlay).await,
+        Provider::OpenRouter => batch_session(overlay).await,
+    }
+}
+
+/// Resolves on the first stop request: `stt toggle`, Ctrl-C or SIGTERM.
+struct StopSignals([tokio::signal::unix::Signal; 3]);
+
+impl StopSignals {
+    fn new() -> Result<Self> {
+        Ok(Self([
+            signal(SignalKind::user_defined2())?,
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::terminate())?,
+        ]))
+    }
+
+    async fn recv(&mut self) {
+        let [stop, interrupt, terminate] = &mut self.0;
+        tokio::select! {
+            _ = stop.recv() => {}
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+}
+
+/// Records until stopped, then transcribes the whole recording at once.
+async fn batch_session(overlay: &Overlay) -> Result<()> {
+    let mut stop = StopSignals::new()?;
+    let key = openrouter::api_key().await?;
+    let mut mic = Microphone::start()?;
+    overlay.send(Event::Phase(Phase::Listening));
+    if ENABLE_STATUS_NOTIFICATIONS {
+        notify("STT recording", "Speak now; press End again to stop", 2500);
+    }
+
+    let mut recording = Vec::new();
+    loop {
+        tokio::select! {
+            _ = stop.recv() => break,
+            chunk = mic.next_chunk() => match chunk? {
+                Some(chunk) => {
+                    overlay.send(Event::Level(audio::level(&chunk)));
+                    recording.extend_from_slice(&chunk);
+                }
+                None => bail!("Microphone stopped unexpectedly (pw-record exited)"),
+            },
+        }
+    }
+
+    overlay.send(Event::Phase(Phase::Finishing));
+    mic.stop().await;
+    let text = openrouter::transcribe(&key, &recording).await?;
+    let typist = Typist::spawn();
+    let typed_any = typist.type_text(text);
+    typist.finish().await;
+    if ENABLE_STATUS_NOTIFICATIONS {
+        notify(
+            "STT finished",
+            if typed_any {
+                "Dictation inserted"
+            } else {
+                "No speech detected"
+            },
+            2500,
+        )
+        .join()
+        .ok();
+    }
+    Ok(())
+}
+
+/// Streams audio to ElevenLabs and types each segment as it is committed.
+async fn realtime_session(overlay: &Overlay) -> Result<()> {
+    let mut stop = StopSignals::new()?;
 
     let (mut tx, mut rx) = elevenlabs::connect(&elevenlabs::api_key().await?).await?;
     eprintln!("ElevenLabs WebSocket connected");
@@ -213,8 +287,6 @@ async fn session(overlay: &Overlay) -> Result<()> {
     loop {
         tokio::select! {
             _ = stop.recv() => break,
-            _ = interrupt.recv() => break,
-            _ = terminate.recv() => break,
             chunk = mic.next_chunk() => match chunk? {
                 Some(chunk) => {
                     overlay.send(Event::Level(audio::level(&chunk)));

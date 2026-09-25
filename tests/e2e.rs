@@ -15,7 +15,12 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    net::TcpListener,
+    sync::mpsc,
+    task::JoinHandle,
+};
 use tokio_tungstenite::{
     accept_hdr_async,
     tungstenite::{
@@ -123,6 +128,7 @@ async fn fake_elevenlabs(
 struct Sandbox {
     dir: TempDir,
     server_url: String,
+    extra_env: Vec<(&'static str, String)>,
 }
 
 impl Sandbox {
@@ -138,7 +144,11 @@ impl Sandbox {
         );
         script(&bin, "wtype", r#"printf '%s|' "$1" >> "$STT_TYPED""#);
         fs::create_dir(dir.path().join("runtime")).unwrap();
-        Self { dir, server_url }
+        Self {
+            dir,
+            server_url,
+            extra_env: Vec::new(),
+        }
     }
 
     fn typed_path(&self) -> PathBuf {
@@ -170,6 +180,7 @@ impl Sandbox {
             .env("ELEVENLABS_API_KEY", KEY)
             .env("STT_ELEVENLABS_URL", &self.server_url)
             .env("STT_TYPED", self.typed_path())
+            .envs(self.extra_env.iter().map(|(k, v)| (k, v)))
             // Headless: no overlay window and no desktop notifications.
             .env_remove("WAYLAND_DISPLAY")
             .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
@@ -377,4 +388,115 @@ async fn tls_failure_is_reported_not_a_crash() {
         "log:\n{log}"
     );
     assert!(!log.contains("panicked"), "log:\n{log}");
+}
+
+/// A request the fake OpenRouter server received.
+#[derive(Debug)]
+struct HttpRequest {
+    request_line: String,
+    authorization: Option<String>,
+    body: Value,
+}
+
+/// Answers one transcription request with `status` and `reply`.
+async fn fake_openrouter(status: u16, reply: Value) -> (String, JoinHandle<HttpRequest>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line).await.unwrap();
+        let (mut length, mut authorization) = (0, None);
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let line = line.trim_end();
+            if line.is_empty() {
+                break;
+            }
+            let (name, value) = line.split_once(": ").unwrap();
+            match name.to_ascii_lowercase().as_str() {
+                "content-length" => length = value.parse().unwrap(),
+                "authorization" => authorization = Some(value.to_owned()),
+                _ => {}
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).await.unwrap();
+        let reply = reply.to_string();
+        let response = format!(
+            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+            reply.len()
+        );
+        reader
+            .get_mut()
+            .write_all(response.as_bytes())
+            .await
+            .unwrap();
+        HttpRequest {
+            request_line: request_line.trim_end().to_owned(),
+            authorization,
+            body: serde_json::from_slice(&body).unwrap(),
+        }
+    });
+    (url, server)
+}
+
+fn openrouter_sandbox(url: String) -> Sandbox {
+    let mut sandbox = Sandbox::new("ws://127.0.0.1:9".into());
+    sandbox.extra_env = vec![
+        ("STT_PROVIDER", "openrouter".into()),
+        ("OPENROUTER_API_KEY", KEY.into()),
+        ("STT_OPENROUTER_URL", url),
+    ];
+    sandbox
+}
+
+/// Records for a moment, stops, and waits for the recorder to exit.
+async fn record_briefly(sandbox: &Sandbox) {
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    assert_eq!(sandbox.status(), "recording");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    sandbox
+        .wait_until("recorder exit", || !sandbox.pid_file().exists())
+        .await;
+}
+
+#[tokio::test]
+async fn openrouter_transcribes_recording_on_stop() {
+    let (url, server) = fake_openrouter(200, json!({"text": " hello there "})).await;
+    let sandbox = openrouter_sandbox(url);
+    record_briefly(&sandbox).await;
+    assert_eq!(sandbox.typed(), "hello there|", "log:\n{}", sandbox.log());
+
+    let request = server.await.unwrap();
+    assert_eq!(
+        request.request_line,
+        "POST /api/v1/audio/transcriptions HTTP/1.1"
+    );
+    assert_eq!(request.authorization, Some(format!("Bearer {KEY}")));
+    assert_eq!(request.body["model"], "microsoft/mai-transcribe-2");
+    assert_eq!(request.body["input_audio"]["format"], "wav");
+    let audio = request.body["input_audio"]["data"].as_str().unwrap();
+    assert!(audio.starts_with("UklGR"), "base64 of RIFF: {audio:.20}");
+    assert!(audio.len() > 10_000, "should hold several chunks of audio");
+}
+
+#[tokio::test]
+async fn openrouter_error_is_notified() {
+    let (url, _server) = fake_openrouter(
+        401,
+        json!({"error": {"message": "No auth credentials found"}}),
+    )
+    .await;
+    let sandbox = openrouter_sandbox(url);
+    record_briefly(&sandbox).await;
+    let log = sandbox.log();
+    assert!(
+        log.contains("notify: STT error: OpenRouter: 401 Unauthorized: No auth credentials found"),
+        "log:\n{log}"
+    );
+    assert_eq!(sandbox.typed(), "");
 }

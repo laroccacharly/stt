@@ -1,14 +1,11 @@
 //! ElevenLabs Scribe realtime speech-to-text over WebSocket.
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use secret_service::{EncryptionType, SecretService};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
@@ -22,34 +19,16 @@ const MODEL: &str = "scribe_v2_realtime";
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Reads `ELEVENLABS_API_KEY`, falling back to the `cterm` entry in the
-/// Secret Service keyring (the one Bun.secrets writes).
+/// Reads `ELEVENLABS_API_KEY` from the environment or the keyring.
 pub async fn api_key() -> Result<String> {
-    if let Ok(key) = std::env::var("ELEVENLABS_API_KEY")
-        && !key.is_empty()
-    {
-        return Ok(key);
-    }
-    let service = SecretService::connect(EncryptionType::Dh).await?;
-    let attributes = HashMap::from([("service", "cterm"), ("account", "ELEVENLABS_API_KEY")]);
-    let found = service.search_items(attributes).await?;
-    let item = match (found.unlocked.first(), found.locked.first()) {
-        (Some(item), _) => item,
-        (None, Some(item)) => {
-            item.unlock().await?;
-            item
-        }
-        (None, None) => bail!("No ElevenLabs key: set ELEVENLABS_API_KEY or run cterm login"),
-    };
-    Ok(String::from_utf8(item.get_secret().await?)?)
+    super::api_key("ELEVENLABS_API_KEY", "ElevenLabs").await
 }
 
 pub struct Sender(SplitSink<Socket, Message>);
 pub struct Receiver(SplitStream<Socket>);
 
 pub async fn connect(api_key: &str) -> Result<(Sender, Receiver)> {
-    // Pin ring explicitly so a dependency enabling aws-lc-rs can't make rustls panic.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    super::install_crypto();
     // Overridable so end-to-end tests can point at a local server.
     let base =
         std::env::var("STT_ELEVENLABS_URL").unwrap_or_else(|_| "wss://api.elevenlabs.io".into());

@@ -1,6 +1,6 @@
 [package]
 name = "stt"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -9,6 +9,7 @@ base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 futures-util = "0.3.34"
 notify-rust = "4.18.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider"] }
 rustix = { version = "1.1.5", features = ["process"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 secret-service = { version = "5.2.0", features = ["rt-tokio-crypto-rust"] }
