@@ -1,13 +1,13 @@
 # stt
 
-Live ElevenLabs dictation for Hyprland. Press **End** to start and again to stop. Text is typed into the focused window as you speak, and a waveform overlay shows you're recording.
+Live dictation for Hyprland. Press **End** to start and again to stop. Your speech is sent to a cloud speech-to-text provider, the text is typed into the focused window, and a waveform overlay shows you're recording.
 
 ## Requirements
 
 - Rust
 - `pw-record` (PipeWire), `wtype`, a notification daemon
 - Hyprland (or another compositor with `wlr-layer-shell`)
-- An API key in `ELEVENLABS_API_KEY` or `OPENROUTER_API_KEY`; run `stt login` to save it in the keyring
+- An API key for at least one supported provider
 
 ## Install
 
@@ -17,3 +17,16 @@ stt install              # binds End in Hyprland
 ```
 
 Remove with `stt uninstall && cargo uninstall stt`. Logs: `$XDG_RUNTIME_DIR/stt/stt.log`.
+
+## Providers
+
+```sh
+stt provider ls          # list providers; * marks the one in use
+stt provider set         # choose one (or: stt provider set <name>)
+```
+
+Each provider reads its key from an environment variable named `<PROVIDER>_API_KEY` (see `.env.example` for the full list). Set it, then run `stt login` to save it in the keyring so the End binding can find it.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
