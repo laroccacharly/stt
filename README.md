@@ -2,6 +2,10 @@
 
 Live dictation for Hyprland. Press **End** to start and again to stop. Your speech is sent to a cloud speech-to-text provider, the text is typed into the focused window, and a waveform overlay shows you're recording.
 
+## Demo
+
+[![stt demo](https://img.youtube.com/vi/emDnKxrjTmU/maxresdefault.jpg)](https://youtu.be/emDnKxrjTmU)
+
 ## Requirements
 
 - Rust
