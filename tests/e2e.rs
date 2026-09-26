@@ -10,7 +10,8 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    io::Write,
+    process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
@@ -170,12 +171,35 @@ impl Sandbox {
     }
 
     fn stt(&self, args: &[&str]) -> Output {
+        self.command(args).output().unwrap()
+    }
+
+    /// Run stt with `input` on stdin.
+    fn stt_with_input(&self, args: &[&str], input: &str) -> Output {
+        let mut child = self
+            .command(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
         let path = format!(
             "{}:{}",
             self.dir.path().join("bin").display(),
             std::env::var("PATH").unwrap()
         );
-        Command::new(env!("CARGO_BIN_EXE_stt"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_stt"));
+        command
             .args(args)
             .env("PATH", path)
             .env("XDG_RUNTIME_DIR", self.dir.path().join("runtime"))
@@ -186,9 +210,8 @@ impl Sandbox {
             .envs(self.extra_env.iter().map(|(k, v)| (k, v)))
             // Headless: no overlay window and no desktop notifications.
             .env_remove("WAYLAND_DISPLAY")
-            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
-            .output()
-            .unwrap()
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent");
+        command
     }
 
     fn status(&self) -> String {
@@ -553,6 +576,35 @@ fn provider_set_is_remembered_and_listed() {
     assert_eq!(config, json!({"provider": "openrouter"}));
 
     assert!(!sandbox.stt(&["provider", "set", "nope"]).status.success());
+    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+}
+
+#[test]
+fn provider_set_without_argument_asks() {
+    let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
+    let ls =
+        |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
+
+    let set = sandbox.stt_with_input(&["provider", "set"], "2\n");
+    assert!(set.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&set.stdout),
+        "* 1. elevenlabs\n  2. cartesia\n  3. openrouter\nProvider [elevenlabs]: Using Cartesia\n"
+    );
+    assert_eq!(ls(&sandbox), "  elevenlabs\n* cartesia\n  openrouter\n");
+
+    let set = sandbox.stt_with_input(&["provider", "set"], "OpenRouter\n");
+    assert!(set.status.success());
+    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+
+    // Enter keeps the current provider.
+    assert!(sandbox.stt_with_input(&["provider", "set"], "\n").status.success());
+    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+
+    for bad in ["4\n", "0\n", "nope\n"] {
+        let set = sandbox.stt_with_input(&["provider", "set"], bad);
+        assert!(!set.status.success(), "{bad:?}");
+    }
     assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
 }
 

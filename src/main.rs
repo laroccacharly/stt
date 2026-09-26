@@ -69,10 +69,10 @@ enum Cmd {
 enum ProviderCmd {
     /// List providers, marking the one in use.
     Ls,
-    /// Use this provider from now on.
+    /// Use this provider from now on; asks which one if not given.
     Set {
         #[arg(value_enum)]
-        provider: Provider,
+        provider: Option<Provider>,
     },
 }
 
@@ -144,6 +144,10 @@ fn run(command: Cmd) -> Result<()> {
             Ok(())
         }
         Cmd::Provider(ProviderCmd::Set { provider }) => {
+            let provider = match provider {
+                Some(provider) => provider,
+                None => choose_provider()?,
+            };
             provider.save()?;
             println!("Using {}", provider.label());
             Ok(())
@@ -155,6 +159,35 @@ fn run(command: Cmd) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Ask on stdin which provider to use, by number or name.
+fn choose_provider() -> Result<Provider> {
+    let current = Provider::current()?;
+    for (i, provider) in Provider::ALL.into_iter().enumerate() {
+        let marker = if provider == current { "*" } else { " " };
+        println!("{marker} {}. {}", i + 1, provider.name());
+    }
+    print!("Provider [{}]: ", current.name());
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return Ok(current);
+    }
+    let by_number = answer
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|i| Provider::ALL.get(i).copied());
+    by_number
+        .or_else(|| {
+            Provider::ALL
+                .into_iter()
+                .find(|provider| provider.name().eq_ignore_ascii_case(answer))
+        })
+        .ok_or_else(|| anyhow!("Unknown provider: {answer}"))
 }
 
 fn login() -> Result<()> {
