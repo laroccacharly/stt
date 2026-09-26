@@ -13,6 +13,7 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest},
 };
 
+use super::{Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;
 
 const MODEL: &str = "scribe_v2_realtime";
@@ -24,7 +25,11 @@ pub async fn api_key() -> Result<String> {
     super::api_key(super::Provider::ElevenLabs).await
 }
 
-pub struct Sender(SplitSink<Socket, Message>);
+pub struct Sender {
+    sink: SplitSink<Socket, Message>,
+    /// Held back one chunk so the last one can carry the commit flag.
+    pending: Option<Vec<u8>>,
+}
 pub struct Receiver(SplitStream<Socket>);
 
 pub async fn connect(api_key: &str) -> Result<(Sender, Receiver)> {
@@ -41,7 +46,13 @@ pub async fn connect(api_key: &str) -> Result<(Sender, Receiver)> {
         .await
         .context("ElevenLabs connection failed")?;
     let (sink, stream) = socket.split();
-    Ok((Sender(sink), Receiver(stream)))
+    Ok((
+        Sender {
+            sink,
+            pending: None,
+        },
+        Receiver(stream),
+    ))
 }
 
 #[derive(Serialize)]
@@ -53,21 +64,34 @@ struct AudioChunk {
 }
 
 impl Sender {
-    /// Streams audio; `commit` asks the server to finalise everything so far.
-    pub async fn send_audio(&mut self, pcm: &[u8], commit: bool) -> Result<()> {
+    async fn send_chunk(&mut self, pcm: &[u8], commit: bool) -> Result<()> {
         let chunk = AudioChunk {
             message_type: "input_audio_chunk",
             audio_base_64: STANDARD.encode(pcm),
             commit,
         };
-        self.0
+        self.sink
             .send(Message::text(serde_json::to_string(&chunk)?))
             .await?;
         Ok(())
     }
+}
 
-    pub async fn close(mut self) {
-        let _ = self.0.close().await;
+impl Transmit for Sender {
+    async fn send_audio(&mut self, pcm: &[u8]) -> Result<()> {
+        if let Some(previous) = self.pending.replace(pcm.to_vec()) {
+            self.send_chunk(&previous, false).await?;
+        }
+        Ok(())
+    }
+
+    async fn commit(&mut self) -> Result<()> {
+        let last = self.pending.take().unwrap_or_default();
+        self.send_chunk(&last, true).await
+    }
+
+    async fn close(mut self) {
+        let _ = self.sink.close().await;
     }
 }
 
@@ -78,17 +102,10 @@ struct ServerMessage {
     error: Option<String>,
 }
 
-#[derive(Debug)]
-pub enum Update {
-    /// A finalised piece of transcript.
-    Committed(String),
-    /// A message we don't act on (session start, partial transcripts, …).
-    Other,
-}
+impl Receive for Receiver {
+    const ONE_TRANSCRIPT_PER_COMMIT: bool = true;
 
-impl Receiver {
-    /// Next server update, or `None` when the socket closes.
-    pub async fn next(&mut self) -> Option<Result<Update>> {
+    async fn next(&mut self) -> Option<Result<Update>> {
         loop {
             let message = match self.0.next().await? {
                 Ok(message) => message,

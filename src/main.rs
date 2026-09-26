@@ -1,4 +1,4 @@
-//! Live dictation for Hyprland, via ElevenLabs or OpenRouter.
+//! Live dictation for Hyprland, via ElevenLabs, Cartesia or OpenRouter.
 
 mod audio;
 mod hyprland;
@@ -26,7 +26,7 @@ use tokio::{
 
 use audio::Microphone;
 use overlay::{Event, Overlay, Phase};
-use provider::{Provider, elevenlabs, elevenlabs::Update, openrouter};
+use provider::{Provider, Receive, Transmit, Update, cartesia, elevenlabs, openrouter};
 
 /// How long to wait for the final transcript after stopping.
 const FINISH_TIMEOUT: Duration = Duration::from_millis(4500);
@@ -51,7 +51,7 @@ enum Cmd {
     /// Run a dictation session in the foreground.
     Record,
     /// Copy API keys from the environment (ELEVENLABS_API_KEY,
-    /// OPENROUTER_API_KEY) into the keyring.
+    /// CARTESIA_API_KEY, OPENROUTER_API_KEY) into the keyring.
     Login,
     /// List or choose the transcription provider.
     #[command(subcommand)]
@@ -174,7 +174,9 @@ fn login() -> Result<()> {
         saved += 1;
     }
     if saved == 0 {
-        bail!("No API keys in the environment: set ELEVENLABS_API_KEY or OPENROUTER_API_KEY");
+        bail!(
+            "No API keys in the environment: set ELEVENLABS_API_KEY, CARTESIA_API_KEY or OPENROUTER_API_KEY"
+        );
     }
     Ok(())
 }
@@ -246,9 +248,19 @@ async fn record(paths: &Paths) -> Result<()> {
 }
 
 async fn session(overlay: &Overlay) -> Result<()> {
-    match Provider::current()? {
-        Provider::ElevenLabs => realtime_session(overlay).await,
-        Provider::OpenRouter => batch_session(overlay).await,
+    // Listen for stop requests before anything slow, so an early one isn't fatal.
+    let mut stop = StopSignals::new()?;
+    let provider = Provider::current()?;
+    match provider {
+        Provider::ElevenLabs => {
+            let socket = elevenlabs::connect(&elevenlabs::api_key().await?).await?;
+            realtime_session(overlay, &mut stop, provider, socket).await
+        }
+        Provider::Cartesia => {
+            let socket = cartesia::connect(&cartesia::api_key().await?).await?;
+            realtime_session(overlay, &mut stop, provider, socket).await
+        }
+        Provider::OpenRouter => batch_session(overlay, &mut stop).await,
     }
 }
 
@@ -275,8 +287,7 @@ impl StopSignals {
 }
 
 /// Records until stopped, then transcribes the whole recording at once.
-async fn batch_session(overlay: &Overlay) -> Result<()> {
-    let mut stop = StopSignals::new()?;
+async fn batch_session(overlay: &Overlay, stop: &mut StopSignals) -> Result<()> {
     let key = openrouter::api_key().await?;
     let mut mic = Microphone::start()?;
     overlay.send(Event::Phase(Phase::Listening));
@@ -301,7 +312,7 @@ async fn batch_session(overlay: &Overlay) -> Result<()> {
     overlay.send(Event::Phase(Phase::Finishing));
     mic.stop().await;
     let text = openrouter::transcribe(&key, &recording).await?;
-    let typist = Typist::spawn();
+    let mut typist = Typist::spawn();
     let typed_any = typist.type_text(text);
     typist.finish().await;
     if ENABLE_STATUS_NOTIFICATIONS {
@@ -320,22 +331,23 @@ async fn batch_session(overlay: &Overlay) -> Result<()> {
     Ok(())
 }
 
-/// Streams audio to ElevenLabs and types each segment as it is committed.
-async fn realtime_session(overlay: &Overlay) -> Result<()> {
-    let mut stop = StopSignals::new()?;
-
-    let (mut tx, mut rx) = elevenlabs::connect(&elevenlabs::api_key().await?).await?;
-    eprintln!("ElevenLabs WebSocket connected");
+/// Streams audio to a realtime backend and types each segment as it is committed.
+async fn realtime_session<T: Transmit, R: Receive>(
+    overlay: &Overlay,
+    stop: &mut StopSignals,
+    provider: Provider,
+    (mut tx, mut rx): (T, R),
+) -> Result<()> {
+    let name = provider.label();
+    eprintln!("{name} WebSocket connected");
     let mut mic = Microphone::start()?;
     overlay.send(Event::Phase(Phase::Listening));
     if ENABLE_STATUS_NOTIFICATIONS {
         notify("STT recording", "Speak now; press End again to stop", 2500);
     }
 
-    let typist = Typist::spawn();
+    let mut typist = Typist::spawn();
     let mut typed_any = false;
-    // Hold one chunk back so the last one can carry the commit flag.
-    let mut pending: Option<Vec<u8>> = None;
 
     loop {
         tokio::select! {
@@ -343,38 +355,43 @@ async fn realtime_session(overlay: &Overlay) -> Result<()> {
             chunk = mic.next_chunk() => match chunk? {
                 Some(chunk) => {
                     overlay.send(Event::Level(audio::level(&chunk)));
-                    if let Some(previous) = pending.replace(chunk) {
-                        tx.send_audio(&previous, false).await?;
-                    }
+                    tx.send_audio(&chunk).await?;
                 }
                 None => bail!("Microphone stopped unexpectedly (pw-record exited)"),
             },
             update = rx.next() => match update.transpose()? {
                 Some(Update::Committed(text)) => typed_any |= typist.type_text(text),
-                Some(Update::Other) => {}
-                None => bail!("ElevenLabs closed the connection"),
+                Some(Update::Delta(text)) => typed_any |= typist.type_delta(&text),
+                Some(Update::Flushed | Update::Other) => {}
+                None => bail!("{name} closed the connection"),
             },
         }
     }
 
     overlay.send(Event::Phase(Phase::Finishing));
     mic.stop().await;
-    tx.send_audio(pending.as_deref().unwrap_or_default(), true)
-        .await?;
+    tx.commit().await?;
     // Wait for the transcript of the final commit, but not forever.
     let finished = timeout(FINISH_TIMEOUT, async {
         while let Some(update) = rx.next().await {
-            if let Update::Committed(text) = update? {
-                typed_any |= typist.type_text(text);
-                return Ok(());
+            match update? {
+                Update::Committed(text) => {
+                    typed_any |= typist.type_text(text);
+                    if R::ONE_TRANSCRIPT_PER_COMMIT {
+                        return Ok(());
+                    }
+                }
+                Update::Delta(text) => typed_any |= typist.type_delta(&text),
+                Update::Flushed => return Ok(()),
+                Update::Other => {}
             }
         }
-        bail!("ElevenLabs closed the connection before the final transcript")
+        bail!("{name} closed the connection before the final transcript")
     })
     .await
     .unwrap_or_else(|_| {
         Err(anyhow!(
-            "ElevenLabs sent no final transcript; the end may be missing"
+            "{name} sent no final transcript; the end may be missing"
         ))
     });
     tx.close().await;
@@ -401,16 +418,15 @@ async fn realtime_session(overlay: &Overlay) -> Result<()> {
 struct Typist {
     queue: mpsc::UnboundedSender<String>,
     worker: tokio::task::JoinHandle<()>,
+    /// Whether anything has been queued yet: the first text gets no leading space.
+    started: bool,
 }
 
 impl Typist {
     fn spawn() -> Self {
         let (queue, mut segments) = mpsc::unbounded_channel::<String>();
         let worker = tokio::spawn(async move {
-            let mut first = true;
-            while let Some(text) = segments.recv().await {
-                let segment = if first { text } else { format!(" {text}") };
-                first = false;
+            while let Some(segment) = segments.recv().await {
                 match tokio::process::Command::new("wtype")
                     .arg(&segment)
                     .stdout(Stdio::null())
@@ -431,16 +447,41 @@ impl Typist {
                 }
             }
         });
-        Self { queue, worker }
+        Self {
+            queue,
+            worker,
+            started: false,
+        }
     }
 
-    /// Queues `text`; returns whether there was anything to type.
-    fn type_text(&self, text: String) -> bool {
-        let has_text = !text.is_empty();
-        if has_text {
-            let _ = self.queue.send(text);
+    /// Queues a segment, spaced from the previous one; returns whether there
+    /// was anything to type.
+    fn type_text(&mut self, text: String) -> bool {
+        if text.is_empty() {
+            return false;
         }
-        has_text
+        self.push(if self.started {
+            format!(" {text}")
+        } else {
+            text
+        })
+    }
+
+    /// Queues a delta that carries its own spacing; returns whether there was
+    /// anything to type.
+    fn type_delta(&mut self, text: &str) -> bool {
+        let text = if self.started {
+            text
+        } else {
+            text.trim_start()
+        };
+        !text.is_empty() && self.push(text.to_owned())
+    }
+
+    fn push(&mut self, text: String) -> bool {
+        self.started = true;
+        let _ = self.queue.send(text);
+        true
     }
 
     async fn finish(self) {

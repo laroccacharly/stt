@@ -1,5 +1,6 @@
 //! Speech-to-text backends.
 
+pub mod cartesia;
 pub mod elevenlabs;
 pub mod openrouter;
 
@@ -18,13 +19,16 @@ pub enum Provider {
     /// Realtime: text is typed while you speak.
     #[value(name = "elevenlabs")]
     ElevenLabs,
+    /// Realtime, with Cartesia Ink 2.
+    #[value(name = "cartesia")]
+    Cartesia,
     /// Batch: the recording is transcribed once you stop.
     #[value(name = "openrouter")]
     OpenRouter,
 }
 
 impl Provider {
-    pub const ALL: [Self; 2] = [Self::ElevenLabs, Self::OpenRouter];
+    pub const ALL: [Self; 3] = [Self::ElevenLabs, Self::Cartesia, Self::OpenRouter];
 
     /// The provider in use now.
     pub fn current() -> Result<Self> {
@@ -44,6 +48,7 @@ impl Provider {
     pub fn name(self) -> &'static str {
         match self {
             Self::ElevenLabs => "elevenlabs",
+            Self::Cartesia => "cartesia",
             Self::OpenRouter => "openrouter",
         }
     }
@@ -52,6 +57,7 @@ impl Provider {
     pub fn key_name(self) -> &'static str {
         match self {
             Self::ElevenLabs => "ELEVENLABS_API_KEY",
+            Self::Cartesia => "CARTESIA_API_KEY",
             Self::OpenRouter => "OPENROUTER_API_KEY",
         }
     }
@@ -59,9 +65,42 @@ impl Provider {
     pub fn label(self) -> &'static str {
         match self {
             Self::ElevenLabs => "ElevenLabs",
+            Self::Cartesia => "Cartesia",
             Self::OpenRouter => "OpenRouter",
         }
     }
+}
+
+/// What a realtime backend reports while dictating.
+#[derive(Debug)]
+pub enum Update {
+    /// A finalised segment of transcript, to be set apart with a space.
+    Committed(String),
+    /// A finalised piece of transcript carrying its own spacing, to be typed
+    /// as is.
+    Delta(String),
+    /// Everything sent before the final commit has been transcribed.
+    Flushed,
+    /// A message we don't act on (session start, partial transcripts, …).
+    Other,
+}
+
+/// The sending half of a realtime transcription session.
+pub trait Transmit {
+    /// Streams a chunk of 16-bit mono PCM at `SAMPLE_RATE`.
+    async fn send_audio(&mut self, pcm: &[u8]) -> Result<()>;
+    /// Asks the server to finalise everything sent so far.
+    async fn commit(&mut self) -> Result<()>;
+    async fn close(self);
+}
+
+/// The receiving half of a realtime transcription session.
+pub trait Receive {
+    /// Whether the final commit is answered by a single `Committed`, rather
+    /// than by transcripts followed by `Flushed`.
+    const ONE_TRANSCRIPT_PER_COMMIT: bool;
+    /// Next server update, or `None` when the socket closes.
+    async fn next(&mut self) -> Option<Result<Update>>;
 }
 
 /// Settings saved by `stt provider set`.

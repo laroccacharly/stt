@@ -1,5 +1,7 @@
-//! End-to-end tests: run the real `stt` binary against a fake ElevenLabs
-//! server, a fake `pw-record` (microphone) and a fake `wtype` (keyboard).
+//! End-to-end tests: run the real `stt` binary against fake ElevenLabs,
+//! Cartesia and OpenRouter servers, a fake `pw-record` (microphone) and a fake
+//! `wtype` (keyboard). `cartesia_transcribes_real_speech` calls the real
+//! Cartesia API and only runs with `cargo test -- --ignored`.
 
 // tungstenite's handshake callback signature returns a large `Err`.
 #![allow(clippy::result_large_err)]
@@ -512,6 +514,7 @@ fn login_without_env_keys_fails_without_touching_keyring() {
     let output = Command::new(env!("CARGO_BIN_EXE_stt"))
         .arg("login")
         .env_remove("ELEVENLABS_API_KEY")
+        .env_remove("CARTESIA_API_KEY")
         .env_remove("OPENROUTER_API_KEY")
         .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
         .output()
@@ -520,6 +523,10 @@ fn login_without_env_keys_fails_without_touching_keyring() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("ELEVENLABS_API_KEY not set; skipped"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("CARTESIA_API_KEY not set; skipped"),
         "{stdout}"
     );
     assert!(
@@ -533,12 +540,12 @@ fn provider_set_is_remembered_and_listed() {
     let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
     let ls =
         |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
-    assert_eq!(ls(&sandbox), "* elevenlabs\n  openrouter\n");
+    assert_eq!(ls(&sandbox), "* elevenlabs\n  cartesia\n  openrouter\n");
 
     let set = sandbox.stt(&["provider", "set", "openrouter"]);
     assert!(set.status.success());
     assert_eq!(String::from_utf8_lossy(&set.stdout), "Using OpenRouter\n");
-    assert_eq!(ls(&sandbox), "  elevenlabs\n* openrouter\n");
+    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
     let config: Value = serde_json::from_str(
         &fs::read_to_string(sandbox.dir.path().join("config/stt/config.json")).unwrap(),
     )
@@ -546,5 +553,184 @@ fn provider_set_is_remembered_and_listed() {
     assert_eq!(config, json!({"provider": "openrouter"}));
 
     assert!(!sandbox.stt(&["provider", "set", "nope"]).status.success());
-    assert_eq!(ls(&sandbox), "  elevenlabs\n* openrouter\n");
+    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+}
+
+/// What the fake Cartesia server observed.
+#[derive(Debug, Default)]
+struct CartesiaSeen {
+    api_key: Option<String>,
+    query: String,
+    audio_bytes: usize,
+    finalized: bool,
+}
+
+/// Sends a live delta after the first audio, then on `finalize` the rest of
+/// the transcript and `flush_done`; or, with `error`, rejects the session.
+async fn fake_cartesia(error: bool) -> (String, JoinHandle<CartesiaSeen>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let mut seen = CartesiaSeen::default();
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_hdr_async(stream, |request: &Request, response: Response| {
+            assert_eq!(request.uri().path(), "/stt/websocket");
+            seen.api_key = request
+                .headers()
+                .get("x-api-key")
+                .map(|v| v.to_str().unwrap().to_owned());
+            seen.query = request.uri().query().unwrap_or_default().to_owned();
+            Ok(response)
+        })
+        .await
+        .unwrap();
+        let send = |value: Value| Message::text(value.to_string());
+        let delta =
+            |text: &str| send(json!({"type": "transcript", "is_final": true, "text": text}));
+        if error {
+            let reply = json!({"type": "error", "status_code": 401, "title": "Unauthorized", "message": "invalid key"});
+            ws.send(send(reply)).await.unwrap();
+            return seen;
+        }
+        while let Some(Ok(message)) = ws.next().await {
+            match message {
+                Message::Binary(audio) => {
+                    if seen.audio_bytes == 0 {
+                        ws.send(delta(" Hello")).await.unwrap();
+                    }
+                    seen.audio_bytes += audio.len();
+                }
+                Message::Text(text) if text.as_str() == "finalize" => {
+                    seen.finalized = true;
+                    // An interim result must not be typed.
+                    let interim = json!({"type": "transcript", "is_final": false, "text": " wor"});
+                    ws.send(send(interim)).await.unwrap();
+                    ws.send(delta(" world")).await.unwrap();
+                    ws.send(delta(".")).await.unwrap();
+                    ws.send(send(json!({"type": "flush_done", "request_id": "r"})))
+                        .await
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+        seen
+    });
+    (url, server)
+}
+
+fn cartesia_sandbox(url: Option<String>) -> Sandbox {
+    let mut sandbox = Sandbox::new("ws://127.0.0.1:9".into());
+    if let Some(url) = url {
+        sandbox.extra_env = vec![("CARTESIA_API_KEY", KEY.into()), ("STT_CARTESIA_URL", url)];
+    }
+    assert!(
+        sandbox
+            .stt(&["provider", "set", "cartesia"])
+            .status
+            .success()
+    );
+    sandbox
+}
+
+#[tokio::test]
+async fn cartesia_types_deltas_live_and_on_finalize() {
+    let (url, server) = fake_cartesia(false).await;
+    let sandbox = cartesia_sandbox(Some(url));
+
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    // The first delta is typed while still recording, without its leading space.
+    sandbox
+        .wait_until("live typing", || sandbox.typed() == "Hello|")
+        .await;
+    assert_eq!(sandbox.status(), "recording");
+
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    sandbox
+        .wait_until("recorder exit", || !sandbox.pid_file().exists())
+        .await;
+    // Later deltas keep their own spacing: "Hello world."
+    assert_eq!(
+        sandbox.typed(),
+        "Hello| world|.|",
+        "log:\n{}",
+        sandbox.log()
+    );
+    assert!(
+        !sandbox.log().contains("STT error"),
+        "log:\n{}",
+        sandbox.log()
+    );
+
+    let seen = server.await.unwrap();
+    assert_eq!(seen.api_key.as_deref(), Some(KEY));
+    for param in [
+        "model=ink-2",
+        "encoding=pcm_s16le",
+        "sample_rate=16000",
+        "cartesia_version=",
+    ] {
+        assert!(seen.query.contains(param), "{param} in {}", seen.query);
+    }
+    assert!(seen.audio_bytes > 0, "{seen:?}");
+    assert!(seen.finalized, "stopping must send finalize");
+}
+
+#[tokio::test]
+async fn cartesia_error_is_notified() {
+    let (url, server) = fake_cartesia(true).await;
+    let sandbox = cartesia_sandbox(Some(url));
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    sandbox
+        .wait_until("recorder exit", || !sandbox.pid_file().exists())
+        .await;
+    server.await.unwrap();
+    let log = sandbox.log();
+    assert!(
+        log.contains("notify: STT error: Cartesia: invalid key"),
+        "log:\n{log}"
+    );
+    assert_eq!(sandbox.typed(), "");
+}
+
+/// Dictates a recorded sentence to the real Cartesia API, using
+/// `CARTESIA_API_KEY` from the environment.
+#[tokio::test]
+#[ignore = "calls the real Cartesia API"]
+async fn cartesia_transcribes_real_speech() {
+    assert!(
+        std::env::var("CARTESIA_API_KEY").is_ok_and(|key| !key.is_empty()),
+        "set CARTESIA_API_KEY"
+    );
+    let sandbox = cartesia_sandbox(None);
+    // "The quick brown fox jumps over the lazy dog.": 16 kHz s16le mono,
+    // played in real time 100 ms at a time, then silence.
+    let speech = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.pcm");
+    script(
+        &sandbox.dir.path().join("bin"),
+        "pw-record",
+        &format!(
+            "for i in $(seq 0 30); do dd if='{}' bs=3200 skip=$i count=1 status=none; sleep 0.1; done\n\
+             while :; do head -c 3200 /dev/zero; sleep 0.1; done",
+            speech.display()
+        ),
+    );
+
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let live = sandbox.typed();
+    assert!(sandbox.stt(&["toggle"]).status.success());
+    sandbox
+        .wait_until("recorder exit", || !sandbox.pid_file().exists())
+        .await;
+
+    let log = sandbox.log();
+    assert!(log.contains("Cartesia WebSocket connected"), "log:\n{log}");
+    assert!(!log.contains("STT error"), "log:\n{log}");
+    assert!(!live.is_empty(), "text should be typed while speaking");
+    let typed = sandbox.typed().replace('|', "").to_lowercase();
+    assert!(
+        typed.starts_with("the quick brown fox jumps over the lazy dog"),
+        "typed: {typed}\nlog:\n{log}"
+    );
 }
