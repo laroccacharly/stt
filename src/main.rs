@@ -176,18 +176,18 @@ fn choose_provider() -> Result<Provider> {
     if answer.is_empty() {
         return Ok(current);
     }
-    let by_number: Option<Provider> = answer
-        .parse::<usize>()
-        .ok()
-        .and_then(|n| n.checked_sub(1))
-        .and_then(|i| Provider::ALL.get(i).copied());
-    by_number
-        .or_else(|| {
-            Provider::ALL
-                .into_iter()
-                .find(|provider| provider.name().eq_ignore_ascii_case(answer))
-        })
-        .ok_or_else(|| anyhow!("Unknown provider: {answer}"))
+    if let Ok(number) = answer.parse::<usize>() {
+        if (1..=Provider::ALL.len()).contains(&number) {
+            return Ok(Provider::ALL[number - 1]);
+        }
+        bail!("Unknown provider: {answer}");
+    }
+    for provider in Provider::ALL {
+        if provider.name().eq_ignore_ascii_case(answer) {
+            return Ok(provider);
+        }
+    }
+    bail!("Unknown provider: {answer}")
 }
 
 fn login() -> Result<()> {
