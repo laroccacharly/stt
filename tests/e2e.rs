@@ -8,9 +8,9 @@
 
 use std::{
     fs,
+    io::Write,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    io::Write,
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
@@ -598,7 +598,12 @@ fn provider_set_without_argument_asks() {
     assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
 
     // Enter keeps the current provider.
-    assert!(sandbox.stt_with_input(&["provider", "set"], "\n").status.success());
+    assert!(
+        sandbox
+            .stt_with_input(&["provider", "set"], "\n")
+            .status
+            .success()
+    );
     assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
 
     for bad in ["4\n", "0\n", "nope\n"] {
