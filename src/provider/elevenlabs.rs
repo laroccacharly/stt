@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
+    tungstenite::{Message, client::IntoClientRequest, handshake::client::Request},
 };
 
-use super::{Receive, Transmit, Update};
+use super::{Connection, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;
 
 const MODEL: &str = "scribe_v2_realtime";
@@ -32,27 +32,28 @@ pub struct Sender {
 }
 pub struct Receiver(SplitStream<Socket>);
 
-pub async fn connect(api_key: &str) -> Result<(Sender, Receiver)> {
+pub async fn connect(api_key: &str) -> Result<Connection<Sender, Receiver>> {
     super::install_crypto();
     // Overridable so end-to-end tests can point at a local server.
-    let base =
+    let base: String =
         std::env::var("STT_ELEVENLABS_URL").unwrap_or_else(|_| "wss://api.elevenlabs.io".into());
-    let url = format!(
+    let url: String = format!(
         "{base}/v1/speech-to-text/realtime?model_id={MODEL}&audio_format=pcm_{SAMPLE_RATE}&commit_strategy=vad"
     );
-    let mut request = url.into_client_request()?;
+    let mut request: Request = url.into_client_request()?;
     request.headers_mut().insert("xi-api-key", api_key.parse()?);
-    let (socket, _) = connect_async(request)
+    let socket: Socket = connect_async(request)
         .await
-        .context("ElevenLabs connection failed")?;
-    let (sink, stream) = socket.split();
-    Ok((
-        Sender {
-            sink,
+        .context("ElevenLabs connection failed")?
+        .0;
+    let halves: (SplitSink<Socket, Message>, SplitStream<Socket>) = socket.split();
+    Ok(Connection {
+        sender: Sender {
+            sink: halves.0,
             pending: None,
         },
-        Receiver(stream),
-    ))
+        receiver: Receiver(halves.1),
+    })
 }
 
 #[derive(Serialize)]
@@ -65,7 +66,7 @@ struct AudioChunk {
 
 impl Sender {
     async fn send_chunk(&mut self, pcm: &[u8], commit: bool) -> Result<()> {
-        let chunk = AudioChunk {
+        let chunk: AudioChunk = AudioChunk {
             message_type: "input_audio_chunk",
             audio_base_64: STANDARD.encode(pcm),
             commit,
@@ -86,7 +87,7 @@ impl Transmit for Sender {
     }
 
     async fn commit(&mut self) -> Result<()> {
-        let last = self.pending.take().unwrap_or_default();
+        let last: Vec<u8> = self.pending.take().unwrap_or_default();
         self.send_chunk(&last, true).await
     }
 
@@ -107,17 +108,15 @@ impl Receive for Receiver {
 
     async fn next(&mut self) -> Option<Result<Update>> {
         loop {
-            let message = match self.0.next().await? {
+            let message: Message = match self.0.next().await? {
                 Ok(message) => message,
                 Err(error) => return Some(Err(error.into())),
             };
-            let Message::Text(text) = message else {
-                if message.is_close() {
-                    return None;
-                }
-                continue;
-            };
-            return Some(parse(&text));
+            match message {
+                Message::Text(text) => return Some(parse(&text)),
+                Message::Close(_) => return None,
+                _ => {}
+            }
         }
     }
 }
@@ -145,19 +144,21 @@ mod tests {
 
     #[test]
     fn parses_committed_transcript() {
-        let update = parse(r#"{"message_type":"committed_transcript","text":" hello "}"#).unwrap();
+        let update: Update =
+            parse(r#"{"message_type":"committed_transcript","text":" hello "}"#).unwrap();
         assert!(matches!(update, Update::Committed(text) if text == "hello"));
     }
 
     #[test]
     fn surfaces_errors() {
-        let error = parse(r#"{"message_type":"auth_error","error":"bad key"}"#).unwrap_err();
+        let error: anyhow::Error =
+            parse(r#"{"message_type":"auth_error","error":"bad key"}"#).unwrap_err();
         assert_eq!(error.to_string(), "ElevenLabs: bad key");
     }
 
     #[test]
     fn omits_commit_when_false() {
-        let json = serde_json::to_string(&AudioChunk {
+        let json: String = serde_json::to_string(&AudioChunk {
             message_type: "input_audio_chunk",
             audio_base_64: String::new(),
             commit: false,

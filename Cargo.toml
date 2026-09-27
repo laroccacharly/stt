@@ -1,6 +1,6 @@
 [package]
 name = "stt"
-version = "0.6.0"
+version = "0.6.2"
 edition = "2024"
 license = "MIT"
 
@@ -31,7 +31,9 @@ lto = "off"
 
 [dev-dependencies]
 futures-util = "0.3.34"
+proc-macro2 = { version = "1", features = ["span-locations"] }
 serde_json = "1.0.151"
+syn = { version = "2", features = ["full", "visit"] }
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "time", "process"] }
 tokio-tungstenite = "0.30.0"

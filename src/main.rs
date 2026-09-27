@@ -19,14 +19,14 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use rustix::process::{Pid, Signal, kill_process};
 use tokio::{
-    signal::unix::{SignalKind, signal},
+    signal::unix::{Signal as UnixSignal, SignalKind, signal},
     sync::mpsc,
     time::timeout,
 };
 
 use audio::Microphone;
 use overlay::{Event, Overlay, Phase};
-use provider::{Provider, Receive, Transmit, Update, cartesia, elevenlabs, openrouter};
+use provider::{Connection, Provider, Receive, Transmit, Update, cartesia, elevenlabs, openrouter};
 
 /// How long to wait for the final transcript after stopping.
 const FINISH_TIMEOUT: Duration = Duration::from_millis(4500);
@@ -84,12 +84,12 @@ struct Paths {
 
 impl Paths {
     fn new() -> Self {
-        let base = std::env::var_os("XDG_RUNTIME_DIR")
+        let base: PathBuf = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(format!("/run/user/{}", rustix::process::getuid().as_raw()))
             });
-        let runtime = base.join("stt");
+        let runtime: PathBuf = base.join("stt");
         Self {
             pid: runtime.join("recording.pid"),
             log: runtime.join("stt.log"),
@@ -100,17 +100,17 @@ impl Paths {
     /// PID of the running recorder, ignoring stale files.
     fn recording_pid(&self) -> Option<Pid> {
         let pid: i32 = fs::read_to_string(&self.pid).ok()?.trim().parse().ok()?;
-        let cmdline = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-        let mut args = cmdline.split(|&b| b == 0);
-        let is_stt = args.next().is_some_and(|exe| exe.ends_with(b"stt"));
-        (is_stt && args.any(|arg| arg == b"record"))
+        let cmdline: Vec<u8> = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
+        let is_stt: bool = args.first().is_some_and(|exe| exe.ends_with(b"stt"));
+        (is_stt && args.iter().skip(1).any(|arg| *arg == b"record"))
             .then(|| Pid::from_raw(pid))
             .flatten()
     }
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let cli: Cli = Cli::parse();
     if let Err(error) = run(cli.command.unwrap_or(Cmd::Toggle)) {
         let _ = notify("STT error", &format!("{error:#}"), 5000).join();
         std::process::exit(1);
@@ -118,7 +118,7 @@ fn main() {
 }
 
 fn run(command: Cmd) -> Result<()> {
-    let paths = Paths::new();
+    let paths: Paths = Paths::new();
     fs::create_dir_all(&paths.runtime)?;
     match command {
         Cmd::Toggle => toggle(&paths),
@@ -136,15 +136,15 @@ fn run(command: Cmd) -> Result<()> {
         Cmd::Record => tokio::runtime::Runtime::new()?.block_on(record(&paths)),
         Cmd::Login => login(),
         Cmd::Provider(ProviderCmd::Ls) => {
-            let current = Provider::current()?;
+            let current: Provider = Provider::current()?;
             for provider in Provider::ALL {
-                let marker = if provider == current { "*" } else { " " };
+                let marker: &str = if provider == current { "*" } else { " " };
                 println!("{marker} {}", provider.name());
             }
             Ok(())
         }
         Cmd::Provider(ProviderCmd::Set { provider }) => {
-            let provider = match provider {
+            let provider: Provider = match provider {
                 Some(provider) => provider,
                 None => choose_provider()?,
             };
@@ -163,20 +163,20 @@ fn run(command: Cmd) -> Result<()> {
 
 /// Ask on stdin which provider to use, by number or name.
 fn choose_provider() -> Result<Provider> {
-    let current = Provider::current()?;
+    let current: Provider = Provider::current()?;
     for (i, provider) in Provider::ALL.into_iter().enumerate() {
-        let marker = if provider == current { "*" } else { " " };
+        let marker: &str = if provider == current { "*" } else { " " };
         println!("{marker} {}. {}", i + 1, provider.name());
     }
     print!("Provider [{}]: ", current.name());
     std::io::stdout().flush()?;
-    let mut answer = String::new();
+    let mut answer: String = String::new();
     std::io::stdin().read_line(&mut answer)?;
-    let answer = answer.trim();
+    let answer: &str = answer.trim();
     if answer.is_empty() {
         return Ok(current);
     }
-    let by_number = answer
+    let by_number: Option<Provider> = answer
         .parse::<usize>()
         .ok()
         .and_then(|n| n.checked_sub(1))
@@ -191,20 +191,20 @@ fn choose_provider() -> Result<Provider> {
 }
 
 fn login() -> Result<()> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    let mut saved = 0;
+    let runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new()?;
+    let mut saved: usize = 0;
     for provider in Provider::ALL {
-        let name = provider.key_name();
-        let Some(key) = std::env::var(name)
+        let name: &str = provider.key_name();
+        let key: Option<String> = std::env::var(name)
             .ok()
-            .filter(|key| !key.trim().is_empty())
-        else {
+            .filter(|key| !key.trim().is_empty());
+        if let Some(key) = key {
+            runtime.block_on(provider::save_api_key(provider, key.trim()))?;
+            println!("Saved {} API key to the keyring", provider.label());
+            saved += 1;
+        } else {
             println!("{name} not set; skipped");
-            continue;
-        };
-        runtime.block_on(provider::save_api_key(provider, key.trim()))?;
-        println!("Saved {} API key to the keyring", provider.label());
-        saved += 1;
+        }
     }
     if saved == 0 {
         bail!(
@@ -220,7 +220,7 @@ fn toggle(paths: &Paths) -> Result<()> {
         return Ok(());
     }
     let _ = fs::remove_file(&paths.pid);
-    let log = File::create(&paths.log)?;
+    let log: File = File::create(&paths.log)?;
     Process::new(std::env::current_exe()?)
         .arg("record")
         .stdin(Stdio::null())
@@ -239,11 +239,11 @@ fn toggle(paths: &Paths) -> Result<()> {
 }
 
 fn demo() {
-    let overlay = Overlay::spawn();
+    let overlay: Overlay = Overlay::spawn();
     thread::sleep(Duration::from_secs(1));
     overlay.send(Event::Phase(Phase::Listening));
     for i in 0..60 {
-        let t = i as f32 * 0.1;
+        let t: f32 = i as f32 * 0.1;
         overlay.send(Event::Level(((t * 2.3).sin() * (t * 0.7).cos()).abs()));
         thread::sleep(Duration::from_millis(100));
     }
@@ -257,7 +257,7 @@ struct PidFile(PathBuf);
 
 impl PidFile {
     fn create(path: PathBuf) -> Result<Self> {
-        let mut file = OpenOptions::new()
+        let mut file: File = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)?;
@@ -273,62 +273,67 @@ impl Drop for PidFile {
 }
 
 async fn record(paths: &Paths) -> Result<()> {
-    let _pid = PidFile::create(paths.pid.clone())?;
-    let overlay = Overlay::spawn();
-    let result = session(&overlay).await;
+    let _pid: PidFile = PidFile::create(paths.pid.clone())?;
+    let overlay: Overlay = Overlay::spawn();
+    let result: Result<()> = session(&overlay).await;
     overlay.close();
     result
 }
 
 async fn session(overlay: &Overlay) -> Result<()> {
     // Listen for stop requests before anything slow, so an early one isn't fatal.
-    let mut stop = StopSignals::new()?;
-    let provider = Provider::current()?;
+    let mut stop: StopSignals = StopSignals::new()?;
+    let provider: Provider = Provider::current()?;
     match provider {
         Provider::ElevenLabs => {
-            let socket = elevenlabs::connect(&elevenlabs::api_key().await?).await?;
-            realtime_session(overlay, &mut stop, provider, socket).await
+            let connection: Connection<elevenlabs::Sender, elevenlabs::Receiver> =
+                elevenlabs::connect(&elevenlabs::api_key().await?).await?;
+            realtime_session(overlay, &mut stop, provider, connection).await
         }
         Provider::Cartesia => {
-            let socket = cartesia::connect(&cartesia::api_key().await?).await?;
-            realtime_session(overlay, &mut stop, provider, socket).await
+            let connection: Connection<cartesia::Sender, cartesia::Receiver> =
+                cartesia::connect(&cartesia::api_key().await?).await?;
+            realtime_session(overlay, &mut stop, provider, connection).await
         }
         Provider::OpenRouter => batch_session(overlay, &mut stop).await,
     }
 }
 
 /// Resolves on the first stop request: `stt toggle`, Ctrl-C or SIGTERM.
-struct StopSignals([tokio::signal::unix::Signal; 3]);
+struct StopSignals {
+    toggle: UnixSignal,
+    interrupt: UnixSignal,
+    terminate: UnixSignal,
+}
 
 impl StopSignals {
     fn new() -> Result<Self> {
-        Ok(Self([
-            signal(SignalKind::user_defined2())?,
-            signal(SignalKind::interrupt())?,
-            signal(SignalKind::terminate())?,
-        ]))
+        Ok(Self {
+            toggle: signal(SignalKind::user_defined2())?,
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+        })
     }
 
     async fn recv(&mut self) {
-        let [stop, interrupt, terminate] = &mut self.0;
         tokio::select! {
-            _ = stop.recv() => {}
-            _ = interrupt.recv() => {}
-            _ = terminate.recv() => {}
+            _ = self.toggle.recv() => {}
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
         }
     }
 }
 
 /// Records until stopped, then transcribes the whole recording at once.
 async fn batch_session(overlay: &Overlay, stop: &mut StopSignals) -> Result<()> {
-    let key = openrouter::api_key().await?;
-    let mut mic = Microphone::start()?;
+    let key: String = openrouter::api_key().await?;
+    let mut mic: Microphone = Microphone::start()?;
     overlay.send(Event::Phase(Phase::Listening));
     if ENABLE_STATUS_NOTIFICATIONS {
         notify("STT recording", "Speak now; press End again to stop", 2500);
     }
 
-    let mut recording = Vec::new();
+    let mut recording: Vec<u8> = Vec::new();
     loop {
         tokio::select! {
             _ = stop.recv() => break,
@@ -344,9 +349,9 @@ async fn batch_session(overlay: &Overlay, stop: &mut StopSignals) -> Result<()> 
 
     overlay.send(Event::Phase(Phase::Finishing));
     mic.stop().await;
-    let text = openrouter::transcribe(&key, &recording).await?;
-    let mut typist = Typist::spawn();
-    let typed_any = typist.type_text(text);
+    let text: String = openrouter::transcribe(&key, &recording).await?;
+    let mut typist: Typist = Typist::spawn();
+    let typed_any: bool = typist.type_text(text);
     typist.finish().await;
     if ENABLE_STATUS_NOTIFICATIONS {
         notify(
@@ -369,18 +374,20 @@ async fn realtime_session<T: Transmit, R: Receive>(
     overlay: &Overlay,
     stop: &mut StopSignals,
     provider: Provider,
-    (mut tx, mut rx): (T, R),
+    connection: Connection<T, R>,
 ) -> Result<()> {
-    let name = provider.label();
+    let mut tx: T = connection.sender;
+    let mut rx: R = connection.receiver;
+    let name: &str = provider.label();
     eprintln!("{name} WebSocket connected");
-    let mut mic = Microphone::start()?;
+    let mut mic: Microphone = Microphone::start()?;
     overlay.send(Event::Phase(Phase::Listening));
     if ENABLE_STATUS_NOTIFICATIONS {
         notify("STT recording", "Speak now; press End again to stop", 2500);
     }
 
-    let mut typist = Typist::spawn();
-    let mut typed_any = false;
+    let mut typist: Typist = Typist::spawn();
+    let mut typed_any: bool = false;
 
     loop {
         tokio::select! {
@@ -405,7 +412,7 @@ async fn realtime_session<T: Transmit, R: Receive>(
     mic.stop().await;
     tx.commit().await?;
     // Wait for the transcript of the final commit, but not forever.
-    let finished = timeout(FINISH_TIMEOUT, async {
+    let finished: Result<()> = timeout(FINISH_TIMEOUT, async {
         while let Some(update) = rx.next().await {
             match update? {
                 Update::Committed(text) => {
@@ -457,8 +464,12 @@ struct Typist {
 
 impl Typist {
     fn spawn() -> Self {
-        let (queue, mut segments) = mpsc::unbounded_channel::<String>();
-        let worker = tokio::spawn(async move {
+        let channel: (
+            mpsc::UnboundedSender<String>,
+            mpsc::UnboundedReceiver<String>,
+        ) = mpsc::unbounded_channel();
+        let mut segments: mpsc::UnboundedReceiver<String> = channel.1;
+        let worker: tokio::task::JoinHandle<()> = tokio::spawn(async move {
             while let Some(segment) = segments.recv().await {
                 match tokio::process::Command::new("wtype")
                     .arg(&segment)
@@ -468,7 +479,8 @@ impl Typist {
                 {
                     Ok(output) if output.status.success() => {}
                     Ok(output) => {
-                        let error = String::from_utf8_lossy(&output.stderr);
+                        let error: std::borrow::Cow<'_, str> =
+                            String::from_utf8_lossy(&output.stderr);
                         typing_failed(if error.is_empty() {
                             "Check the focused window"
                         } else {
@@ -481,7 +493,7 @@ impl Typist {
             }
         });
         Self {
-            queue,
+            queue: channel.0,
             worker,
             started: false,
         }
@@ -503,7 +515,7 @@ impl Typist {
     /// Queues a delta that carries its own spacing; returns whether there was
     /// anything to type.
     fn type_delta(&mut self, text: &str) -> bool {
-        let text = if self.started {
+        let text: &str = if self.started {
             text
         } else {
             text.trim_start()
@@ -526,7 +538,7 @@ impl Typist {
 /// Reports a typing failure and waits for the notification to go out, so it
 /// isn't lost if the session ends right after.
 async fn typing_failed(error: &str) {
-    let handle = notify("STT typing failed", error, 4000);
+    let handle: thread::JoinHandle<()> = notify("STT typing failed", error, 4000);
     let _ = tokio::task::spawn_blocking(move || handle.join()).await;
 }
 
@@ -535,7 +547,7 @@ async fn typing_failed(error: &str) {
 /// notification must go out before the process exits.
 fn notify(summary: &str, body: &str, timeout_ms: u32) -> thread::JoinHandle<()> {
     eprintln!("notify: {summary}: {body}");
-    let mut notification = notify_rust::Notification::new();
+    let mut notification: notify_rust::Notification = notify_rust::Notification::new();
     notification
         .appname("stt")
         .id(NOTIFICATION_ID)

@@ -34,9 +34,9 @@ struct ErrorDetail {
 pub async fn transcribe(api_key: &str, pcm: &[u8]) -> Result<String> {
     super::install_crypto();
     // Overridable so end-to-end tests can point at a local server.
-    let base =
+    let base: String =
         std::env::var("STT_OPENROUTER_URL").unwrap_or_else(|_| "https://openrouter.ai".into());
-    let body = json!({
+    let body: serde_json::Value = json!({
         "model": MODEL,
         "input_audio": { "data": STANDARD.encode(wav(pcm)), "format": "wav" },
         "provider": { "options": { "azure": {
@@ -44,7 +44,7 @@ pub async fn transcribe(api_key: &str, pcm: &[u8]) -> Result<String> {
             "enhancedMode": { "modelOptions": { "transcribeStyle": "clean" } }
         } } },
     });
-    let response = reqwest::Client::new()
+    let response: reqwest::Response = reqwest::Client::new()
         .post(format!("{base}/api/v1/audio/transcriptions"))
         .bearer_auth(api_key)
         .header("X-OpenRouter-Title", "stt")
@@ -52,10 +52,10 @@ pub async fn transcribe(api_key: &str, pcm: &[u8]) -> Result<String> {
         .send()
         .await
         .context("OpenRouter request failed")?;
-    let status = response.status();
-    let text = response.text().await?;
+    let status: reqwest::StatusCode = response.status();
+    let text: String = response.text().await?;
     if !status.is_success() {
-        let message = serde_json::from_str::<ErrorBody>(&text)
+        let message: String = serde_json::from_str::<ErrorBody>(&text)
             .map(|body| body.error.message)
             .unwrap_or(text);
         bail!("OpenRouter: {status}: {message}");
@@ -67,9 +67,9 @@ pub async fn transcribe(api_key: &str, pcm: &[u8]) -> Result<String> {
 
 /// Wraps raw PCM in a WAV header.
 fn wav(pcm: &[u8]) -> Vec<u8> {
-    let data_len = pcm.len() as u32;
-    let byte_rate = SAMPLE_RATE * 2;
-    let mut out = Vec::with_capacity(44 + pcm.len());
+    let data_len: u32 = pcm.len() as u32;
+    let byte_rate: u32 = SAMPLE_RATE * 2;
+    let mut out: Vec<u8> = Vec::with_capacity(44 + pcm.len());
     out.extend_from_slice(b"RIFF");
     out.extend_from_slice(&(36 + data_len).to_le_bytes());
     out.extend_from_slice(b"WAVEfmt ");
@@ -92,7 +92,8 @@ mod tests {
 
     #[test]
     fn wav_header_describes_pcm() {
-        let wav = wav(&[1, 2, 3, 4]);
+        let wav: Vec<u8> = wav(&[1, 2, 3, 4]);
+
         assert_eq!(wav.len(), 48);
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 40);

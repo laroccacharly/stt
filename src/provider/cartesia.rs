@@ -10,10 +10,10 @@ use serde::Deserialize;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
+    tungstenite::{Message, client::IntoClientRequest, handshake::client::Request},
 };
 
-use super::{Receive, Transmit, Update};
+use super::{Connection, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;
 
 const MODEL: &str = "ink-2";
@@ -29,20 +29,25 @@ pub async fn api_key() -> Result<String> {
 pub struct Sender(SplitSink<Socket, Message>);
 pub struct Receiver(SplitStream<Socket>);
 
-pub async fn connect(api_key: &str) -> Result<(Sender, Receiver)> {
+pub async fn connect(api_key: &str) -> Result<Connection<Sender, Receiver>> {
     super::install_crypto();
     // Overridable so end-to-end tests can point at a local server.
-    let base = std::env::var("STT_CARTESIA_URL").unwrap_or_else(|_| "wss://api.cartesia.ai".into());
-    let url = format!(
+    let base: String =
+        std::env::var("STT_CARTESIA_URL").unwrap_or_else(|_| "wss://api.cartesia.ai".into());
+    let url: String = format!(
         "{base}/stt/websocket?model={MODEL}&encoding=pcm_s16le&sample_rate={SAMPLE_RATE}&cartesia_version={API_VERSION}"
     );
-    let mut request = url.into_client_request()?;
+    let mut request: Request = url.into_client_request()?;
     request.headers_mut().insert("X-API-Key", api_key.parse()?);
-    let (socket, _) = connect_async(request)
+    let socket: Socket = connect_async(request)
         .await
-        .context("Cartesia connection failed")?;
-    let (sink, stream) = socket.split();
-    Ok((Sender(sink), Receiver(stream)))
+        .context("Cartesia connection failed")?
+        .0;
+    let halves: (SplitSink<Socket, Message>, SplitStream<Socket>) = socket.split();
+    Ok(Connection {
+        sender: Sender(halves.0),
+        receiver: Receiver(halves.1),
+    })
 }
 
 impl Transmit for Sender {
@@ -76,17 +81,15 @@ impl Receive for Receiver {
 
     async fn next(&mut self) -> Option<Result<Update>> {
         loop {
-            let message = match self.0.next().await? {
+            let message: Message = match self.0.next().await? {
                 Ok(message) => message,
                 Err(error) => return Some(Err(error.into())),
             };
-            let Message::Text(text) = message else {
-                if message.is_close() {
-                    return None;
-                }
-                continue;
-            };
-            return Some(parse(&text));
+            match message {
+                Message::Text(text) => return Some(parse(&text)),
+                Message::Close(_) => return None,
+                _ => {}
+            }
         }
     }
 }
@@ -111,25 +114,27 @@ mod tests {
 
     #[test]
     fn parses_final_transcript() {
-        let update = parse(r#"{"type":"transcript","is_final":true,"text":" hello"}"#).unwrap();
+        let update: Update =
+            parse(r#"{"type":"transcript","is_final":true,"text":" hello"}"#).unwrap();
         assert!(matches!(update, Update::Delta(text) if text == " hello"));
     }
 
     #[test]
     fn ignores_interim_transcript() {
-        let update = parse(r#"{"type":"transcript","is_final":false,"text":"hel"}"#).unwrap();
+        let update: Update =
+            parse(r#"{"type":"transcript","is_final":false,"text":"hel"}"#).unwrap();
         assert!(matches!(update, Update::Other));
     }
 
     #[test]
     fn flush_done_ends_the_commit() {
-        let update = parse(r#"{"type":"flush_done","request_id":"x"}"#).unwrap();
+        let update: Update = parse(r#"{"type":"flush_done","request_id":"x"}"#).unwrap();
         assert!(matches!(update, Update::Flushed));
     }
 
     #[test]
     fn surfaces_errors() {
-        let error = parse(
+        let error: anyhow::Error = parse(
             r#"{"type":"error","status_code":401,"title":"Unauthorized","message":"bad key"}"#,
         )
         .unwrap_err();

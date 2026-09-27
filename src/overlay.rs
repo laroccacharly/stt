@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, FrameCallbackData},
+    compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
     delegate_dispatch2, delegate_registry,
     output::{OutputHandler, OutputState},
     reexports::{
@@ -21,8 +21,8 @@ use smithay_client_toolkit::{
         },
         calloop_wayland_source::WaylandSource,
         client::{
-            Connection, QueueHandle,
-            globals::registry_queue_init,
+            Connection, EventQueue, QueueHandle,
+            globals::{GlobalList, registry_queue_init},
             protocol::{wl_output, wl_shm, wl_surface},
         },
     },
@@ -35,7 +35,10 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
+    },
 };
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, PixmapMut, Rect, Transform};
 
@@ -52,13 +55,27 @@ pub enum Phase {
     Finishing,
 }
 
+/// Left and right colour of the bar gradient.
+struct Gradient {
+    start: [f32; 3],
+    end: [f32; 3],
+}
+
 impl Phase {
-    /// Left and right colour of the bar gradient.
-    fn gradient(self) -> ([f32; 3], [f32; 3]) {
+    fn gradient(self) -> Gradient {
         match self {
-            Phase::Connecting => ([0.55, 0.55, 0.62], [0.75, 0.75, 0.82]),
-            Phase::Listening => ([0.33, 0.78, 1.0], [0.78, 0.45, 1.0]),
-            Phase::Finishing => ([0.40, 0.95, 0.60], [0.30, 0.80, 0.95]),
+            Phase::Connecting => Gradient {
+                start: [0.55, 0.55, 0.62],
+                end: [0.75, 0.75, 0.82],
+            },
+            Phase::Listening => Gradient {
+                start: [0.33, 0.78, 1.0],
+                end: [0.78, 0.45, 1.0],
+            },
+            Phase::Finishing => Gradient {
+                start: [0.40, 0.95, 0.60],
+                end: [0.30, 0.80, 0.95],
+            },
         }
     }
 }
@@ -86,8 +103,9 @@ fn overlay_failed(error: &str) {
 
 impl Overlay {
     pub fn spawn() -> Self {
-        let (tx, rx) = channel::channel();
-        let thread = thread::Builder::new()
+        let endpoints: (Sender<Event>, Channel<Event>) = channel::channel();
+        let rx: Channel<Event> = endpoints.1;
+        let thread: Option<JoinHandle<()>> = thread::Builder::new()
             .name("overlay".into())
             .spawn(move || {
                 if let Err(error) = run(rx) {
@@ -97,7 +115,7 @@ impl Overlay {
             .map_err(|error| overlay_failed(&error.to_string()))
             .ok();
         Self {
-            tx: Some(tx),
+            tx: Some(endpoints.0),
             thread,
         }
     }
@@ -119,15 +137,18 @@ impl Overlay {
 }
 
 fn run(events: Channel<Event>) -> Result<()> {
-    let conn = Connection::connect_to_env().context("no Wayland display")?;
-    let (globals, queue) = registry_queue_init(&conn)?;
-    let qh = queue.handle();
-    let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor missing")?;
-    let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell missing")?;
-    let shm = Shm::bind(&globals, &qh).context("wl_shm missing")?;
+    let conn: Connection = Connection::connect_to_env().context("no Wayland display")?;
+    let registry: (GlobalList, EventQueue<State>) = registry_queue_init(&conn)?;
+    let globals: GlobalList = registry.0;
+    let queue: EventQueue<State> = registry.1;
+    let qh: QueueHandle<State> = queue.handle();
+    let compositor: CompositorState =
+        CompositorState::bind(&globals, &qh).context("wl_compositor missing")?;
+    let layer_shell: LayerShell = LayerShell::bind(&globals, &qh).context("layer shell missing")?;
+    let shm: Shm = Shm::bind(&globals, &qh).context("wl_shm missing")?;
 
-    let surface = compositor.create_surface(&qh);
-    let layer =
+    let surface: wl_surface::WlSurface = compositor.create_surface(&qh);
+    let layer: LayerSurface =
         layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("stt-overlay"), None);
     layer.set_anchor(Anchor::BOTTOM);
     layer.set_margin(0, 0, BOTTOM_MARGIN, 0);
@@ -135,13 +156,13 @@ fn run(events: Channel<Event>) -> Result<()> {
     layer.set_exclusive_zone(-1);
     layer.set_size(WIDTH, HEIGHT);
     // An empty input region lets clicks pass through to the window below.
-    let region = smithay_client_toolkit::compositor::Region::new(&compositor)?;
+    let region: Region = Region::new(&compositor)?;
     layer
         .wl_surface()
         .set_input_region(Some(region.wl_region()));
     layer.commit();
 
-    let mut event_loop = EventLoop::<State>::try_new()?;
+    let mut event_loop: EventLoop<'_, State> = EventLoop::try_new()?;
     WaylandSource::new(conn, queue).insert(event_loop.handle())?;
     event_loop
         .handle()
@@ -151,7 +172,7 @@ fn run(events: Channel<Event>) -> Result<()> {
         })
         .map_err(|error| anyhow::anyhow!("{error}"))?;
 
-    let mut state = State {
+    let mut state: State = State {
         registry: RegistryState::new(&globals),
         outputs: OutputState::new(&globals, &qh),
         pool: SlotPool::new((WIDTH * HEIGHT * 4) as usize, &shm)?,
@@ -181,7 +202,7 @@ struct Waveform {
 
 impl Waveform {
     fn new() -> Self {
-        let now = Instant::now();
+        let now: Instant = Instant::now();
         Self {
             levels: [0.0; BARS],
             shown: [0.0; BARS],
@@ -206,67 +227,74 @@ impl Waveform {
 
     /// Advance the animation. Returns `false` once fully faded out.
     fn step(&mut self) -> bool {
-        let now = Instant::now();
-        let frames = (now - self.last).as_secs_f32() * 60.0;
+        let now: Instant = Instant::now();
+        let frames: f32 = (now - self.last).as_secs_f32() * 60.0;
         self.last = now;
-        // Exponential smoothing that behaves the same at any refresh rate.
-        let ease = |rate: f32| 1.0 - (1.0 - rate).powf(frames);
 
-        let target = if self.closing { 0.0 } else { 1.0 };
-        self.opacity += (target - self.opacity) * ease(0.18);
+        let target: f32 = if self.closing { 0.0 } else { 1.0 };
+        self.opacity += (target - self.opacity) * ease(0.18, frames);
 
-        let t = (now - self.start).as_secs_f32();
+        let t: f32 = (now - self.start).as_secs_f32();
         for (i, shown) in self.shown.iter_mut().enumerate() {
-            let goal = match self.phase {
+            let goal: f32 = match self.phase {
                 Phase::Listening => self.levels[i],
                 // Gentle ripple while there is no audio to show.
                 _ => 0.08 + 0.06 * (t * 4.0 + i as f32 * 0.35).sin(),
             };
-            let rate = if goal > *shown { 0.5 } else { 0.15 };
-            *shown += (goal - *shown) * ease(rate);
+            let rate: f32 = if goal > *shown { 0.5 } else { 0.15 };
+            *shown += (goal - *shown) * ease(rate, frames);
         }
         !(self.closing && self.opacity < 0.02)
     }
 
     fn draw(&self, pixmap: &mut PixmapMut, scale: f32) {
-        let transform = Transform::from_scale(scale, scale);
-        let (w, h) = (WIDTH as f32, HEIGHT as f32);
-        let alpha = self.opacity;
-        let mut paint = Paint {
+        let transform: Transform = Transform::from_scale(scale, scale);
+        let w: f32 = WIDTH as f32;
+        let h: f32 = HEIGHT as f32;
+        let alpha: f32 = self.opacity;
+        let mut paint: Paint<'_> = Paint {
             anti_alias: true,
             ..Paint::default()
         };
 
-        let pill = capsule(0.5, 0.5, w - 1.0, h - 1.0);
+        let pill: tiny_skia::Path = capsule(0.5, 0.5, w - 1.0, h - 1.0);
         paint.set_color(Color::from_rgba(0.07, 0.07, 0.10, 0.9 * alpha).unwrap());
         pixmap.fill_path(&pill, &paint, FillRule::Winding, transform, None);
 
-        let (start, end) = self.phase.gradient();
-        let pad = h / 2.0;
-        let step = (w - 2.0 * pad) / BARS as f32;
-        let bar = step * 0.55;
-        let max_half = h / 2.0 - 10.0;
+        let gradient: Gradient = self.phase.gradient();
+        let pad: f32 = h / 2.0;
+        let step: f32 = (w - 2.0 * pad) / BARS as f32;
+        let bar: f32 = step * 0.55;
+        let max_half: f32 = h / 2.0 - 10.0;
         for (i, value) in self.shown.iter().enumerate() {
-            let x = pad + i as f32 * step + (step - bar) / 2.0;
+            let x: f32 = pad + i as f32 * step + (step - bar) / 2.0;
             // Taper the edges so the waveform sits nicely inside the pill.
-            let edge = (PI * (i as f32 + 0.5) / BARS as f32).sin().powf(0.6);
-            let half = (value * edge * max_half).max(bar / 2.0);
-            let k = i as f32 / (BARS - 1) as f32;
-            let [r, g, b] = std::array::from_fn(|c| start[c] + (end[c] - start[c]) * k);
-            paint.set_color(Color::from_rgba(r, g, b, alpha).unwrap());
-            let path = capsule(x, h / 2.0 - half, bar, half * 2.0);
+            let edge: f32 = (PI * (i as f32 + 0.5) / BARS as f32).sin().powf(0.6);
+            let half: f32 = (value * edge * max_half).max(bar / 2.0);
+            let k: f32 = i as f32 / (BARS - 1) as f32;
+            let rgb: [f32; 3] = std::array::from_fn(|c| {
+                gradient.start[c] + (gradient.end[c] - gradient.start[c]) * k
+            });
+            paint.set_color(Color::from_rgba(rgb[0], rgb[1], rgb[2], alpha).unwrap());
+            let path: tiny_skia::Path = capsule(x, h / 2.0 - half, bar, half * 2.0);
             pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
         }
     }
 }
 
+/// Exponential smoothing that behaves the same at any refresh rate.
+fn ease(rate: f32, frames: f32) -> f32 {
+    1.0 - (1.0 - rate).powf(frames)
+}
+
 /// A rectangle with fully rounded ends along its shorter side.
 fn capsule(x: f32, y: f32, w: f32, h: f32) -> tiny_skia::Path {
     const K: f32 = 0.552_284_8; // cubic Bézier approximation of a quarter circle
-    let r = w.min(h) / 2.0;
-    let c = r * K;
-    let (x1, y1) = (x + w, y + h);
-    let mut pb = PathBuilder::new();
+    let r: f32 = w.min(h) / 2.0;
+    let c: f32 = r * K;
+    let x1: f32 = x + w;
+    let y1: f32 = y + h;
+    let mut pb: PathBuilder = PathBuilder::new();
     pb.move_to(x + r, y);
     pb.line_to(x1 - r, y);
     pb.cubic_to(x1 - r + c, y, x1, y + r - c, x1, y + r);
@@ -300,15 +328,20 @@ impl State {
             self.exit = true;
             return;
         }
-        let (width, height) = (WIDTH as i32 * self.scale, HEIGHT as i32 * self.scale);
-        let Ok((buffer, canvas)) =
+        let width: i32 = WIDTH as i32 * self.scale;
+        let height: i32 = HEIGHT as i32 * self.scale;
+        let allocation: (Buffer, &mut [u8]) = if let Ok(allocation) =
             self.pool
                 .create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
-        else {
+        {
+            allocation
+        } else {
             overlay_failed("failed to allocate buffer");
             self.exit = true;
             return;
         };
+        let buffer: Buffer = allocation.0;
+        let canvas: &mut [u8] = allocation.1;
         canvas.fill(0);
         if let Some(mut pixmap) = PixmapMut::from_bytes(canvas, width as u32, height as u32) {
             self.waveform.draw(&mut pixmap, self.scale as f32);
@@ -318,7 +351,8 @@ impl State {
             pixel.swap(0, 2);
         }
 
-        let surface = self.layer.wl_surface();
+        let surface: &wl_surface::WlSurface = self.layer.wl_surface();
+
         surface.damage_buffer(0, 0, width, height);
         surface.frame(qh, FrameCallbackData(surface.clone()));
         if buffer.attach_to(surface).is_err() {

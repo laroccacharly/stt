@@ -14,11 +14,11 @@ fn hypr_dir() -> Result<PathBuf> {
 }
 
 pub fn install() -> Result<()> {
-    let dir = hypr_dir()?;
-    let binding = dir.join("stt.lua");
+    let dir: PathBuf = hypr_dir()?;
+    let binding: PathBuf = dir.join("stt.lua");
     fs::write(&binding, BINDING)?;
-    let config_path = dir.join("hyprland.lua");
-    let mut config = fs::read_to_string(&config_path)?;
+    let config_path: PathBuf = dir.join("hyprland.lua");
+    let mut config: String = fs::read_to_string(&config_path)?;
     if !config.lines().any(|line| line.trim() == SOURCE_LINE) {
         if !config.is_empty() && !config.ends_with('\n') {
             config.push('\n');
@@ -33,9 +33,10 @@ pub fn install() -> Result<()> {
 }
 
 pub fn uninstall() -> Result<()> {
-    let dir = hypr_dir()?;
-    let config_path = dir.join("hyprland.lua");
-    let config = fs::read_to_string(&config_path)?;
+    let dir: PathBuf = hypr_dir()?;
+    let config_path: PathBuf = dir.join("hyprland.lua");
+    let config: String = fs::read_to_string(&config_path)?;
+
     let kept: Vec<&str> = config
         .split('\n')
         .filter(|line| line.trim() != SOURCE_LINE)
