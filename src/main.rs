@@ -193,14 +193,20 @@ fn choose_provider() -> Result<Provider> {
 fn login() -> Result<()> {
     let runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new()?;
     let mut saved: usize = 0;
+    let mut seen: Vec<&str> = Vec::new();
     for provider in Provider::ALL {
         let name: &str = provider.key_name();
+        // Providers from the same company share a key.
+        if seen.contains(&name) {
+            continue;
+        }
+        seen.push(name);
         let key: Option<String> = std::env::var(name)
             .ok()
             .filter(|key| !key.trim().is_empty());
         if let Some(key) = key {
             runtime.block_on(provider::save_api_key(provider, key.trim()))?;
-            println!("Saved {} API key to the keyring", provider.label());
+            println!("Saved {} API key to the keyring", provider.company());
             saved += 1;
         } else {
             println!("{name} not set; skipped");
@@ -285,7 +291,7 @@ async fn session(overlay: &Overlay) -> Result<()> {
     let mut stop: StopSignals = StopSignals::new()?;
     let provider: Provider = Provider::current()?;
     match provider {
-        Provider::ElevenLabs => {
+        Provider::ElevenLabsRealtime => {
             let connection: Connection<elevenlabs::Sender, elevenlabs::Receiver> =
                 elevenlabs::connect(&elevenlabs::api_key().await?).await?;
             realtime_session(overlay, &mut stop, provider, connection).await
@@ -295,7 +301,22 @@ async fn session(overlay: &Overlay) -> Result<()> {
                 cartesia::connect(&cartesia::api_key().await?).await?;
             realtime_session(overlay, &mut stop, provider, connection).await
         }
-        Provider::OpenRouter => batch_session(overlay, &mut stop).await,
+        Provider::ElevenLabsBatch => {
+            let key: String = elevenlabs::api_key().await?;
+            let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
+            type_transcript(elevenlabs::transcribe(&key, &recording).await?).await;
+            Ok(())
+        }
+        Provider::OpenRouter => {
+            let key: String = openrouter::api_key().await?;
+            let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
+            let text: String = match openrouter::transcribe(&key, &recording).await {
+                Ok(text) => text,
+                Err(error) => elevenlabs_fallback(&recording, error).await?,
+            };
+            type_transcript(text).await;
+            Ok(())
+        }
     }
 }
 
@@ -324,9 +345,8 @@ impl StopSignals {
     }
 }
 
-/// Records until stopped, then transcribes the whole recording at once.
-async fn batch_session(overlay: &Overlay, stop: &mut StopSignals) -> Result<()> {
-    let key: String = openrouter::api_key().await?;
+/// Records until stopped, for a batch backend to transcribe at once.
+async fn record_until_stopped(overlay: &Overlay, stop: &mut StopSignals) -> Result<Vec<u8>> {
     let mut mic: Microphone = Microphone::start()?;
     overlay.send(Event::Phase(Phase::Listening));
     if ENABLE_STATUS_NOTIFICATIONS {
@@ -349,7 +369,11 @@ async fn batch_session(overlay: &Overlay, stop: &mut StopSignals) -> Result<()> 
 
     overlay.send(Event::Phase(Phase::Finishing));
     mic.stop().await;
-    let text: String = openrouter::transcribe(&key, &recording).await?;
+    Ok(recording)
+}
+
+/// Types a batch transcript into the focused window.
+async fn type_transcript(text: String) {
     let mut typist: Typist = Typist::spawn();
     let typed_any: bool = typist.type_text(text);
     typist.finish().await;
@@ -366,7 +390,19 @@ async fn batch_session(overlay: &Overlay, stop: &mut StopSignals) -> Result<()> 
         .join()
         .ok();
     }
-    Ok(())
+}
+
+/// Transcribes the recording with ElevenLabs after OpenRouter failed with
+/// `error`, reporting both failures if this fails too.
+async fn elevenlabs_fallback(recording: &[u8], error: anyhow::Error) -> Result<String> {
+    eprintln!("{error:#}; falling back to ElevenLabs");
+    let fallback: Result<String> = match elevenlabs::api_key().await {
+        Ok(key) => elevenlabs::transcribe(&key, recording).await,
+        Err(key_error) => Err(key_error),
+    };
+    fallback.map_err(|fallback_error| {
+        anyhow!("{error:#}; the ElevenLabs fallback failed too: {fallback_error:#}")
+    })
 }
 
 /// Streams audio to a realtime backend and types each segment as it is committed.
@@ -378,7 +414,7 @@ async fn realtime_session<T: Transmit, R: Receive>(
 ) -> Result<()> {
     let mut tx: T = connection.sender;
     let mut rx: R = connection.receiver;
-    let name: &str = provider.label();
+    let name: &str = provider.company();
     eprintln!("{name} WebSocket connected");
     let mut mic: Microphone = Microphone::start()?;
     overlay.send(Event::Phase(Phase::Listening));

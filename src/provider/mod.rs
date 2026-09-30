@@ -12,29 +12,42 @@ use secret_service::{Collection, EncryptionType, Item, SearchItemsResult, Secret
 use serde::{Deserialize, Serialize};
 
 /// Which backend transcribes: the one chosen with `stt provider set`, else
-/// ElevenLabs.
+/// ElevenLabs realtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum Provider {
     /// Realtime: text is typed while you speak.
-    #[value(name = "elevenlabs")]
-    ElevenLabs,
+    // `elevenlabs` is its name from before the batch variant existed.
+    #[value(name = "elevenlabs-realtime", alias = "elevenlabs")]
+    #[serde(rename = "elevenlabs-realtime", alias = "elevenlabs")]
+    ElevenLabsRealtime,
+    /// Batch: the recording is transcribed once you stop, with Scribe v2.
+    #[value(name = "elevenlabs-batch")]
+    #[serde(rename = "elevenlabs-batch")]
+    ElevenLabsBatch,
     /// Realtime, with Cartesia Ink 2.
     #[value(name = "cartesia")]
+    #[serde(rename = "cartesia")]
     Cartesia,
-    /// Batch: the recording is transcribed once you stop.
+    /// Batch: the recording is transcribed once you stop; falls back to
+    /// ElevenLabs batch if that fails.
     #[value(name = "openrouter")]
+    #[serde(rename = "openrouter")]
     OpenRouter,
 }
 
 impl Provider {
-    pub const ALL: [Self; 3] = [Self::ElevenLabs, Self::Cartesia, Self::OpenRouter];
+    pub const ALL: [Self; 4] = [
+        Self::ElevenLabsRealtime,
+        Self::ElevenLabsBatch,
+        Self::Cartesia,
+        Self::OpenRouter,
+    ];
 
     /// The provider in use now.
     pub fn current() -> Result<Self> {
         let config: Option<Config> =
             json_store::read_opt(&config_path()?).context("reading the stt config")?;
-        Ok(config.map_or(Self::ElevenLabs, |config| config.provider))
+        Ok(config.map_or(Self::ElevenLabsRealtime, |config| config.provider))
     }
 
     /// Makes this the provider used from now on.
@@ -47,7 +60,8 @@ impl Provider {
     /// The name used on the command line and in the config.
     pub fn name(self) -> &'static str {
         match self {
-            Self::ElevenLabs => "elevenlabs",
+            Self::ElevenLabsRealtime => "elevenlabs-realtime",
+            Self::ElevenLabsBatch => "elevenlabs-batch",
             Self::Cartesia => "cartesia",
             Self::OpenRouter => "openrouter",
         }
@@ -56,15 +70,25 @@ impl Provider {
     /// The environment variable and keyring account holding the API key.
     pub fn key_name(self) -> &'static str {
         match self {
-            Self::ElevenLabs => "ELEVENLABS_API_KEY",
+            Self::ElevenLabsRealtime | Self::ElevenLabsBatch => "ELEVENLABS_API_KEY",
             Self::Cartesia => "CARTESIA_API_KEY",
             Self::OpenRouter => "OPENROUTER_API_KEY",
         }
     }
 
+    /// The company behind the provider, for API key messages.
+    pub fn company(self) -> &'static str {
+        match self {
+            Self::ElevenLabsRealtime | Self::ElevenLabsBatch => "ElevenLabs",
+            Self::Cartesia => "Cartesia",
+            Self::OpenRouter => "OpenRouter",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
-            Self::ElevenLabs => "ElevenLabs",
+            Self::ElevenLabsRealtime => "ElevenLabs realtime",
+            Self::ElevenLabsBatch => "ElevenLabs batch",
             Self::Cartesia => "Cartesia",
             Self::OpenRouter => "OpenRouter",
         }
@@ -152,7 +176,7 @@ async fn api_key(provider: Provider) -> Result<String> {
         }
         (None, None) => bail!(
             "No {} key: set {name} (then run `stt login` to save it)",
-            provider.label()
+            provider.company()
         ),
     };
     Ok(String::from_utf8(item.get_secret().await?)?)
@@ -169,7 +193,7 @@ pub async fn save_api_key(provider: Provider, key: &str) -> Result<()> {
     let attributes: HashMap<&str, &str> = HashMap::from([("service", SERVICE), ("account", name)]);
     collection
         .create_item(
-            &format!("stt {} API key", provider.label()),
+            &format!("stt {} API key", provider.company()),
             attributes,
             key.as_bytes(),
             true,

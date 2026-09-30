@@ -6,6 +6,7 @@ use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
+use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
@@ -17,12 +18,14 @@ use super::{Connection, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;
 
 const MODEL: &str = "scribe_v2_realtime";
+/// Model for whole recordings.
+const BATCH_MODEL: &str = "scribe_v2";
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Reads `ELEVENLABS_API_KEY` from the environment or the keyring.
 pub async fn api_key() -> Result<String> {
-    super::api_key(super::Provider::ElevenLabs).await
+    super::api_key(super::Provider::ElevenLabsRealtime).await
 }
 
 pub struct Sender {
@@ -54,6 +57,40 @@ pub async fn connect(api_key: &str) -> Result<Connection<Sender, Receiver>> {
         },
         receiver: Receiver(halves.1),
     })
+}
+
+#[derive(Deserialize)]
+struct Transcription {
+    text: String,
+}
+
+/// Transcribes a whole recording of 16-bit mono PCM at `SAMPLE_RATE` with the
+/// batch API.
+pub async fn transcribe(api_key: &str, pcm: &[u8]) -> Result<String> {
+    super::install_crypto();
+    // The tests' realtime override (`ws://…`) also serves the batch API (`http://…`).
+    let base: String = std::env::var("STT_ELEVENLABS_URL")
+        .map(|url| url.replacen("ws", "http", 1))
+        .unwrap_or_else(|_| "https://api.elevenlabs.io".into());
+    let form: Form = Form::new()
+        .text("model_id", BATCH_MODEL)
+        .text("file_format", format!("pcm_s16le_{}", SAMPLE_RATE / 1000))
+        .part("file", Part::bytes(pcm.to_vec()).file_name("recording.pcm"));
+    let response: reqwest::Response = reqwest::Client::new()
+        .post(format!("{base}/v1/speech-to-text"))
+        .header("xi-api-key", api_key)
+        .multipart(form)
+        .send()
+        .await
+        .context("ElevenLabs request failed")?;
+    let status: reqwest::StatusCode = response.status();
+    let text: String = response.text().await?;
+    if !status.is_success() {
+        bail!("ElevenLabs: {status}: {text}");
+    }
+    let transcription: Transcription =
+        serde_json::from_str(&text).context("ElevenLabs sent an unexpected response")?;
+    Ok(transcription.text.trim().to_owned())
 }
 
 #[derive(Serialize)]

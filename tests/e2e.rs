@@ -7,6 +7,7 @@
 #![allow(clippy::result_large_err)]
 
 use std::{
+    collections::HashMap,
     fs,
     io::Write,
     os::unix::fs::PermissionsExt,
@@ -416,24 +417,29 @@ async fn tls_failure_is_reported_not_a_crash() {
     assert!(!log.contains("panicked"), "log:\n{log}");
 }
 
-/// A request the fake OpenRouter server received.
+/// A request a fake HTTP server received.
 #[derive(Debug)]
 struct HttpRequest {
     request_line: String,
-    authorization: Option<String>,
-    body: Value,
+    /// Header names are lowercase.
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
 }
 
-/// Answers one transcription request with `status` and `reply`.
-async fn fake_openrouter(status: u16, reply: Value) -> (String, JoinHandle<HttpRequest>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
+impl HttpRequest {
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap()
+    }
+}
+
+/// Answers one HTTP request with `status` and `reply`.
+fn fake_http(listener: TcpListener, status: u16, reply: Value) -> JoinHandle<HttpRequest> {
+    tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut reader = BufReader::new(stream);
         let mut request_line = String::new();
         reader.read_line(&mut request_line).await.unwrap();
-        let (mut length, mut authorization) = (0, None);
+        let mut headers = HashMap::new();
         loop {
             let mut line = String::new();
             reader.read_line(&mut line).await.unwrap();
@@ -442,12 +448,11 @@ async fn fake_openrouter(status: u16, reply: Value) -> (String, JoinHandle<HttpR
                 break;
             }
             let (name, value) = line.split_once(": ").unwrap();
-            match name.to_ascii_lowercase().as_str() {
-                "content-length" => length = value.parse().unwrap(),
-                "authorization" => authorization = Some(value.to_owned()),
-                _ => {}
-            }
+            headers.insert(name.to_ascii_lowercase(), value.to_owned());
         }
+        let length: usize = headers
+            .get("content-length")
+            .map_or(0, |length| length.parse().unwrap());
         let mut body = vec![0; length];
         reader.read_exact(&mut body).await.unwrap();
         let reply = reply.to_string();
@@ -462,15 +467,34 @@ async fn fake_openrouter(status: u16, reply: Value) -> (String, JoinHandle<HttpR
             .unwrap();
         HttpRequest {
             request_line: request_line.trim_end().to_owned(),
-            authorization,
-            body: serde_json::from_slice(&body).unwrap(),
+            headers,
+            body,
         }
-    });
-    (url, server)
+    })
+}
+
+/// A fake HTTP server on its own port; `scheme` prefixes the returned URL.
+async fn fake_http_at(
+    scheme: &str,
+    status: u16,
+    reply: Value,
+) -> (String, JoinHandle<HttpRequest>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("{scheme}://{}", listener.local_addr().unwrap());
+    (url, fake_http(listener, status, reply))
+}
+
+async fn fake_openrouter(status: u16, reply: Value) -> (String, JoinHandle<HttpRequest>) {
+    fake_http_at("http", status, reply).await
 }
 
 fn openrouter_sandbox(url: String) -> Sandbox {
-    let mut sandbox = Sandbox::new("ws://127.0.0.1:9".into());
+    openrouter_sandbox_with_elevenlabs(url, "ws://127.0.0.1:9".into())
+}
+
+/// Uses OpenRouter at `url`, with the ElevenLabs fallback at `elevenlabs_url`.
+fn openrouter_sandbox_with_elevenlabs(url: String, elevenlabs_url: String) -> Sandbox {
+    let mut sandbox = Sandbox::new(elevenlabs_url);
     sandbox.extra_env = vec![
         ("OPENROUTER_API_KEY", KEY.into()),
         ("STT_OPENROUTER_URL", url),
@@ -507,29 +531,143 @@ async fn openrouter_transcribes_recording_on_stop() {
         request.request_line,
         "POST /api/v1/audio/transcriptions HTTP/1.1"
     );
-    assert_eq!(request.authorization, Some(format!("Bearer {KEY}")));
-    assert_eq!(request.body["model"], "microsoft/mai-transcribe-2");
-    assert_eq!(request.body["input_audio"]["format"], "wav");
-    let audio = request.body["input_audio"]["data"].as_str().unwrap();
+    assert_eq!(
+        request.headers.get("authorization"),
+        Some(&format!("Bearer {KEY}"))
+    );
+    let body = request.json();
+    assert_eq!(body["model"], "microsoft/mai-transcribe-2");
+    assert_eq!(body["input_audio"]["format"], "wav");
+    let audio = body["input_audio"]["data"].as_str().unwrap();
     assert!(audio.starts_with("UklGR"), "base64 of RIFF: {audio:.20}");
     assert!(audio.len() > 10_000, "should hold several chunks of audio");
 }
 
 #[tokio::test]
-async fn openrouter_error_is_notified() {
-    let (url, _server) = fake_openrouter(
+async fn openrouter_failure_falls_back_to_elevenlabs() {
+    let (url, _openrouter) = fake_openrouter(
+        502,
+        json!({"error": {"message": "Provider returned error"}}),
+    )
+    .await;
+    let (elevenlabs_url, elevenlabs) =
+        fake_http_at("ws", 200, json!({"text": " saved by the fallback "})).await;
+    let sandbox = openrouter_sandbox_with_elevenlabs(url, elevenlabs_url);
+    record_briefly(&sandbox).await;
+    let log = sandbox.log();
+    assert_eq!(sandbox.typed(), "saved by the fallback|", "log:\n{log}");
+    assert!(
+        log.contains(
+            "OpenRouter: 502 Bad Gateway: Provider returned error; falling back to ElevenLabs"
+        ),
+        "log:\n{log}"
+    );
+    assert!(!log.contains("STT error"), "log:\n{log}");
+
+    let request = elevenlabs.await.unwrap();
+    assert_eq!(request.request_line, "POST /v1/speech-to-text HTTP/1.1");
+    assert_eq!(request.headers.get("xi-api-key"), Some(&KEY.to_owned()));
+    let body = String::from_utf8_lossy(&request.body);
+    assert!(body.contains("scribe_v2\r\n"), "{body:.500}");
+    assert!(body.contains("pcm_s16le_16\r\n"), "{body:.500}");
+    assert!(body.len() > 10_000, "should hold several chunks of audio");
+}
+
+#[tokio::test]
+async fn openrouter_and_fallback_errors_are_notified() {
+    let (url, _openrouter) = fake_openrouter(
         401,
         json!({"error": {"message": "No auth credentials found"}}),
     )
     .await;
-    let sandbox = openrouter_sandbox(url);
+    let (elevenlabs_url, _elevenlabs) =
+        fake_http_at("ws", 429, json!({"detail": "quota exceeded"})).await;
+    let sandbox = openrouter_sandbox_with_elevenlabs(url, elevenlabs_url);
     record_briefly(&sandbox).await;
     let log = sandbox.log();
     assert!(
-        log.contains("notify: STT error: OpenRouter: 401 Unauthorized: No auth credentials found"),
+        log.contains(
+            "notify: STT error: OpenRouter: 401 Unauthorized: No auth credentials found; \
+             the ElevenLabs fallback failed too: ElevenLabs: 429 Too Many Requests: \
+             {\"detail\":\"quota exceeded\"}"
+        ),
         "log:\n{log}"
     );
     assert_eq!(sandbox.typed(), "");
+}
+
+#[tokio::test]
+async fn elevenlabs_batch_transcribes_recording_on_stop() {
+    let (url, server) = fake_http_at("ws", 200, json!({"text": " hello batch "})).await;
+    let sandbox = Sandbox::new(url);
+    assert!(
+        sandbox
+            .stt(&["provider", "set", "elevenlabs-batch"])
+            .status
+            .success()
+    );
+    record_briefly(&sandbox).await;
+    let log = sandbox.log();
+    assert_eq!(sandbox.typed(), "hello batch|", "log:\n{log}");
+    assert!(!log.contains("STT error"), "log:\n{log}");
+
+    let request = server.await.unwrap();
+    assert_eq!(request.request_line, "POST /v1/speech-to-text HTTP/1.1");
+    assert_eq!(request.headers.get("xi-api-key"), Some(&KEY.to_owned()));
+    let body = String::from_utf8_lossy(&request.body);
+    assert!(body.contains("scribe_v2\r\n"), "{body:.500}");
+    assert!(body.contains("pcm_s16le_16\r\n"), "{body:.500}");
+    assert!(body.len() > 10_000, "should hold several chunks of audio");
+}
+
+#[tokio::test]
+async fn elevenlabs_batch_error_is_notified() {
+    let (url, _server) = fake_http_at("ws", 401, json!({"detail": "invalid key"})).await;
+    let sandbox = Sandbox::new(url);
+    assert!(
+        sandbox
+            .stt(&["provider", "set", "elevenlabs-batch"])
+            .status
+            .success()
+    );
+    record_briefly(&sandbox).await;
+    let log = sandbox.log();
+    assert!(
+        log.contains(
+            "notify: STT error: ElevenLabs: 401 Unauthorized: {\"detail\":\"invalid key\"}"
+        ),
+        "log:\n{log}"
+    );
+    assert_eq!(sandbox.typed(), "");
+}
+
+#[test]
+fn old_elevenlabs_name_means_realtime() {
+    let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
+    let ls =
+        |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
+    let config_dir = sandbox.dir.path().join("config/stt");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.json"),
+        r#"{"provider": "elevenlabs"}"#,
+    )
+    .unwrap();
+    assert!(ls(&sandbox).starts_with("* elevenlabs-realtime\n"));
+
+    assert!(
+        sandbox
+            .stt(&["provider", "set", "cartesia"])
+            .status
+            .success()
+    );
+    assert!(
+        sandbox
+            .stt(&["provider", "set", "elevenlabs"])
+            .status
+            .success()
+    );
+    assert!(ls(&sandbox).starts_with("* elevenlabs-realtime\n"));
 }
 
 #[test]
@@ -544,8 +682,11 @@ fn login_without_env_keys_fails_without_touching_keyring() {
         .unwrap();
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("ELEVENLABS_API_KEY not set; skipped"),
+    assert_eq!(
+        stdout
+            .matches("ELEVENLABS_API_KEY not set; skipped")
+            .count(),
+        1,
         "{stdout}"
     );
     assert!(
@@ -563,12 +704,18 @@ fn provider_set_is_remembered_and_listed() {
     let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
     let ls =
         |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
-    assert_eq!(ls(&sandbox), "* elevenlabs\n  cartesia\n  openrouter\n");
+    assert_eq!(
+        ls(&sandbox),
+        "* elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n  openrouter\n"
+    );
 
     let set = sandbox.stt(&["provider", "set", "openrouter"]);
     assert!(set.status.success());
     assert_eq!(String::from_utf8_lossy(&set.stdout), "Using OpenRouter\n");
-    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+    assert_eq!(
+        ls(&sandbox),
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+    );
     let config: Value = serde_json::from_str(
         &fs::read_to_string(sandbox.dir.path().join("config/stt/config.json")).unwrap(),
     )
@@ -576,7 +723,10 @@ fn provider_set_is_remembered_and_listed() {
     assert_eq!(config, json!({"provider": "openrouter"}));
 
     assert!(!sandbox.stt(&["provider", "set", "nope"]).status.success());
-    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+    assert_eq!(
+        ls(&sandbox),
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+    );
 }
 
 #[test]
@@ -585,17 +735,24 @@ fn provider_set_without_argument_asks() {
     let ls =
         |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
 
-    let set = sandbox.stt_with_input(&["provider", "set"], "2\n");
+    let set = sandbox.stt_with_input(&["provider", "set"], "3\n");
     assert!(set.status.success());
     assert_eq!(
         String::from_utf8_lossy(&set.stdout),
-        "* 1. elevenlabs\n  2. cartesia\n  3. openrouter\nProvider [elevenlabs]: Using Cartesia\n"
+        "* 1. elevenlabs-realtime\n  2. elevenlabs-batch\n  3. cartesia\n  4. openrouter\n\
+         Provider [elevenlabs-realtime]: Using Cartesia\n"
     );
-    assert_eq!(ls(&sandbox), "  elevenlabs\n* cartesia\n  openrouter\n");
+    assert_eq!(
+        ls(&sandbox),
+        "  elevenlabs-realtime\n  elevenlabs-batch\n* cartesia\n  openrouter\n"
+    );
 
     let set = sandbox.stt_with_input(&["provider", "set"], "OpenRouter\n");
     assert!(set.status.success());
-    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+    assert_eq!(
+        ls(&sandbox),
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+    );
 
     // Enter keeps the current provider.
     assert!(
@@ -604,13 +761,19 @@ fn provider_set_without_argument_asks() {
             .status
             .success()
     );
-    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+    assert_eq!(
+        ls(&sandbox),
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+    );
 
-    for bad in ["4\n", "0\n", "nope\n"] {
+    for bad in ["5\n", "0\n", "nope\n"] {
         let set = sandbox.stt_with_input(&["provider", "set"], bad);
         assert!(!set.status.success(), "{bad:?}");
     }
-    assert_eq!(ls(&sandbox), "  elevenlabs\n  cartesia\n* openrouter\n");
+    assert_eq!(
+        ls(&sandbox),
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+    );
 }
 
 /// What the fake Cartesia server observed.
