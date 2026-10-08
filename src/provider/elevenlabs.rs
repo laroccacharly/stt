@@ -20,6 +20,8 @@ use crate::audio::SAMPLE_RATE;
 const MODEL: &str = "scribe_v2_realtime";
 /// Model for whole recordings.
 const BATCH_MODEL: &str = "scribe_v2";
+/// Transcription language, fixed instead of auto-detected.
+const LANGUAGE: &str = "en";
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -41,7 +43,7 @@ pub async fn connect(api_key: &str) -> Result<Connection<Sender, Receiver>> {
     let base: String =
         std::env::var("STT_ELEVENLABS_URL").unwrap_or_else(|_| "wss://api.elevenlabs.io".into());
     let url: String = format!(
-        "{base}/v1/speech-to-text/realtime?model_id={MODEL}&audio_format=pcm_{SAMPLE_RATE}&commit_strategy=vad"
+        "{base}/v1/speech-to-text/realtime?model_id={MODEL}&audio_format=pcm_{SAMPLE_RATE}&commit_strategy=vad&language_code={LANGUAGE}"
     );
     let mut request: Request = url.into_client_request()?;
     request.headers_mut().insert("xi-api-key", api_key.parse()?);
@@ -74,6 +76,7 @@ pub async fn transcribe(api_key: &str, pcm: &[u8]) -> Result<String> {
         .unwrap_or_else(|_| "https://api.elevenlabs.io".into());
     let form: Form = Form::new()
         .text("model_id", BATCH_MODEL)
+        .text("language_code", LANGUAGE)
         .text("file_format", format!("pcm_s16le_{}", SAMPLE_RATE / 1000))
         .part("file", Part::bytes(pcm.to_vec()).file_name("recording.pcm"));
     let response: reqwest::Response = reqwest::Client::new()
