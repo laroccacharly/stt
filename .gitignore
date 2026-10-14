@@ -1,3 +1,3 @@
 /target
 legacy/node_modules/
-*.log
+*.log__pycache__/

@@ -2,6 +2,7 @@
 
 pub mod cartesia;
 pub mod elevenlabs;
+pub mod local;
 pub mod openrouter;
 
 use std::{collections::HashMap, path::PathBuf};
@@ -33,14 +34,24 @@ pub enum Provider {
     #[value(name = "openrouter")]
     #[serde(rename = "openrouter")]
     OpenRouter,
+    /// Local: Phonon-2 on this machine's CPU, English only.
+    #[value(name = "phonon-2")]
+    #[serde(rename = "phonon-2")]
+    Phonon2,
+    /// Local: Parakeet Redux on this machine's CPU, 25 languages.
+    #[value(name = "parakeet-redux")]
+    #[serde(rename = "parakeet-redux")]
+    ParakeetRedux,
 }
 
 impl Provider {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::ElevenLabsRealtime,
         Self::ElevenLabsBatch,
         Self::Cartesia,
         Self::OpenRouter,
+        Self::Phonon2,
+        Self::ParakeetRedux,
     ];
 
     /// The provider in use now.
@@ -64,15 +75,28 @@ impl Provider {
             Self::ElevenLabsBatch => "elevenlabs-batch",
             Self::Cartesia => "cartesia",
             Self::OpenRouter => "openrouter",
+            Self::Phonon2 => "phonon-2",
+            Self::ParakeetRedux => "parakeet-redux",
         }
     }
 
-    /// The environment variable and keyring account holding the API key.
-    pub fn key_name(self) -> &'static str {
+    /// The environment variable and keyring account holding the API key;
+    /// local models have none.
+    pub fn key_name(self) -> Option<&'static str> {
         match self {
-            Self::ElevenLabsRealtime | Self::ElevenLabsBatch => "ELEVENLABS_API_KEY",
-            Self::Cartesia => "CARTESIA_API_KEY",
-            Self::OpenRouter => "OPENROUTER_API_KEY",
+            Self::ElevenLabsRealtime | Self::ElevenLabsBatch => Some("ELEVENLABS_API_KEY"),
+            Self::Cartesia => Some("CARTESIA_API_KEY"),
+            Self::OpenRouter => Some("OPENROUTER_API_KEY"),
+            Self::Phonon2 | Self::ParakeetRedux => None,
+        }
+    }
+
+    /// The model run on this machine, for local providers.
+    pub fn local_model(self) -> Option<local::Model> {
+        match self {
+            Self::Phonon2 => Some(local::Model::Phonon2),
+            Self::ParakeetRedux => Some(local::Model::ParakeetRedux),
+            _ => None,
         }
     }
 
@@ -82,6 +106,8 @@ impl Provider {
             Self::ElevenLabsRealtime | Self::ElevenLabsBatch => "ElevenLabs",
             Self::Cartesia => "Cartesia",
             Self::OpenRouter => "OpenRouter",
+            Self::Phonon2 => "Fermion Research",
+            Self::ParakeetRedux => "Moondream",
         }
     }
 
@@ -91,6 +117,8 @@ impl Provider {
             Self::ElevenLabsBatch => "ElevenLabs batch",
             Self::Cartesia => "Cartesia",
             Self::OpenRouter => "OpenRouter",
+            Self::Phonon2 => "Phonon-2 (local)",
+            Self::ParakeetRedux => "Parakeet Redux (local)",
         }
     }
 }
@@ -159,7 +187,9 @@ fn install_crypto() {
 /// Reads the provider's key from its environment variable, else from the
 /// keyring entry saved by `stt login`.
 async fn api_key(provider: Provider) -> Result<String> {
-    let name: &str = provider.key_name();
+    let name: &str = provider
+        .key_name()
+        .with_context(|| format!("{} needs no API key", provider.label()))?;
     if let Ok(key) = std::env::var(name)
         && !key.is_empty()
     {
@@ -184,7 +214,9 @@ async fn api_key(provider: Provider) -> Result<String> {
 
 /// Saves `key` in the keyring for `stt` to find, replacing any earlier one.
 pub async fn save_api_key(provider: Provider, key: &str) -> Result<()> {
-    let name: &str = provider.key_name();
+    let name: &str = provider
+        .key_name()
+        .with_context(|| format!("{} needs no API key", provider.label()))?;
     let service: SecretService<'_> = SecretService::connect(EncryptionType::Dh).await?;
     let collection: Collection<'_> = service.get_default_collection().await?;
     if collection.is_locked().await? {

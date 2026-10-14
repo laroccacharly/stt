@@ -1,6 +1,6 @@
 # stt
 
-Live dictation for Hyprland. Press **End** to start and again to stop. Your speech is sent to a cloud speech-to-text provider, the text is typed into the focused window, and a waveform overlay shows you're recording.
+Live dictation for Hyprland. Press **End** to start and again to stop. Your speech is transcribed by a cloud speech-to-text provider or a local model (Phonon-2, Parakeet Redux), the text is typed into the focused window, and a waveform overlay shows you're recording.
 
 ## Demo
 
@@ -11,7 +11,7 @@ Live dictation for Hyprland. Press **End** to start and again to stop. Your spee
 - Rust
 - `pw-record` (PipeWire), `wtype`, a notification daemon
 - Hyprland (or another compositor with `wlr-layer-shell`)
-- An API key for at least one supported provider
+- An API key for a cloud provider, or [uv](https://docs.astral.sh/uv/) for the local models
 
 ## Install
 

@@ -1,7 +1,8 @@
 //! End-to-end tests: run the real `stt` binary against fake ElevenLabs,
 //! Cartesia and OpenRouter servers, a fake `pw-record` (microphone) and a fake
-//! `wtype` (keyboard). `cartesia_transcribes_real_speech` calls the real
-//! Cartesia API and only runs with `cargo test -- --ignored`.
+//! `wtype` (keyboard). The `#[ignore]`d
+//! tests use the real Cartesia API and the real local models, and only run
+//! with `cargo test -- --ignored`.
 
 // tungstenite's handshake callback signature returns a large `Err`.
 #![allow(clippy::result_large_err)]
@@ -205,6 +206,7 @@ impl Sandbox {
             .env("PATH", path)
             .env("XDG_RUNTIME_DIR", self.dir.path().join("runtime"))
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
+            .env("XDG_CACHE_HOME", self.dir.path().join("cache"))
             .env("ELEVENLABS_API_KEY", KEY)
             .env("STT_ELEVENLABS_URL", &self.server_url)
             .env("STT_TYPED", self.typed_path())
@@ -706,7 +708,7 @@ fn provider_set_is_remembered_and_listed() {
         |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
     assert_eq!(
         ls(&sandbox),
-        "* elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n  openrouter\n"
+        "* elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n  openrouter\n  phonon-2\n  parakeet-redux\n"
     );
 
     let set = sandbox.stt(&["provider", "set", "openrouter"]);
@@ -714,7 +716,7 @@ fn provider_set_is_remembered_and_listed() {
     assert_eq!(String::from_utf8_lossy(&set.stdout), "Using OpenRouter\n");
     assert_eq!(
         ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
     );
     let config: Value = serde_json::from_str(
         &fs::read_to_string(sandbox.dir.path().join("config/stt/config.json")).unwrap(),
@@ -725,7 +727,7 @@ fn provider_set_is_remembered_and_listed() {
     assert!(!sandbox.stt(&["provider", "set", "nope"]).status.success());
     assert_eq!(
         ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
     );
 }
 
@@ -739,19 +741,20 @@ fn provider_set_without_argument_asks() {
     assert!(set.status.success());
     assert_eq!(
         String::from_utf8_lossy(&set.stdout),
-        "* 1. elevenlabs-realtime\n  2. elevenlabs-batch\n  3. cartesia\n  4. openrouter\n\
+        "* 1. elevenlabs-realtime\n  2. elevenlabs-batch\n  3. cartesia\n  4. openrouter\n  \
+         5. phonon-2\n  6. parakeet-redux\n\
          Provider [elevenlabs-realtime]: Using Cartesia\n"
     );
     assert_eq!(
         ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n* cartesia\n  openrouter\n"
+        "  elevenlabs-realtime\n  elevenlabs-batch\n* cartesia\n  openrouter\n  phonon-2\n  parakeet-redux\n"
     );
 
     let set = sandbox.stt_with_input(&["provider", "set"], "OpenRouter\n");
     assert!(set.status.success());
     assert_eq!(
         ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
     );
 
     // Enter keeps the current provider.
@@ -763,16 +766,16 @@ fn provider_set_without_argument_asks() {
     );
     assert_eq!(
         ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
     );
 
-    for bad in ["5\n", "0\n", "nope\n"] {
+    for bad in ["7\n", "0\n", "nope\n"] {
         let set = sandbox.stt_with_input(&["provider", "set"], bad);
         assert!(!set.status.success(), "{bad:?}");
     }
     assert_eq!(
         ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n"
+        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
     );
 }
 
@@ -953,4 +956,120 @@ async fn cartesia_transcribes_real_speech() {
         typed.starts_with("the quick brown fox jumps over the lazy dog"),
         "typed: {typed}\nlog:\n{log}"
     );
+}
+
+/// Kills a local model server, and the `uv` above it, when dropped.
+struct ServerGuard(PathBuf);
+
+impl ServerGuard {
+    fn pid(&self) -> Option<String> {
+        fs::read_to_string(&self.0).ok()
+    }
+}
+
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid() {
+            // The server runs in its own process group.
+            let _ = Command::new("kill")
+                .args(["--", &format!("-{}", pid.trim())])
+                .status();
+        }
+    }
+}
+
+/// Lowercase words only, for comparing transcripts.
+fn words(text: &str) -> String {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Runs the local model tests one at a time: they share the real cache and
+/// each loads a model on the CPU.
+static LOCAL_MODELS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Dictates two recorded sentences to the real local `provider`, through the
+/// real `uv`, and checks the server is started once and kept up.
+async fn local_transcribes_real_speech(provider: &str) {
+    let _one_at_a_time = LOCAL_MODELS.lock().await;
+    let mut sandbox = Sandbox::new("ws://127.0.0.1:9".into());
+    // The real cache, where uv keeps the model's environment.
+    let cache = std::env::var("XDG_CACHE_HOME")
+        .unwrap_or_else(|_| format!("{}/.cache", std::env::var("HOME").unwrap()));
+    sandbox.extra_env = vec![("XDG_CACHE_HOME", cache)];
+    let name = if provider == "phonon-2" {
+        "phonon"
+    } else {
+        "parakeet_redux"
+    };
+    let server = ServerGuard(sandbox.dir.path().join(format!("runtime/stt/{name}.pid")));
+    let set = sandbox.stt(&["provider", "set", provider]);
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+
+    let mut pid = None;
+    // Real speech, 16 kHz s16le mono: a recording, then a LibriSpeech clip.
+    for (fixture, expected) in [
+        ("hello.pcm", "the quick brown fox jumps over the lazy dog"),
+        (
+            "quilter.pcm",
+            "mister quilter is the apostle of the middle classes and we are glad to welcome his gospel",
+        ),
+    ] {
+        let speech = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(fixture);
+        let chunks = fs::metadata(&speech).unwrap().len().div_ceil(3200);
+        // Played in real time 100 ms at a time, then silence.
+        script(
+            &sandbox.dir.path().join("bin"),
+            "pw-record",
+            &format!(
+                "for i in $(seq 0 {}); do dd if='{}' bs=3200 skip=$i count=1 status=none; sleep 0.1; done\n\
+                 while :; do head -c 3200 /dev/zero; sleep 0.1; done",
+                chunks - 1,
+                speech.display()
+            ),
+        );
+        let _ = fs::remove_file(sandbox.typed_path());
+
+        assert!(sandbox.stt(&["toggle"]).status.success());
+        tokio::time::sleep(Duration::from_millis(chunks * 100 + 500)).await;
+        assert!(sandbox.stt(&["toggle"]).status.success());
+        sandbox
+            .wait_until("recorder exit", || !sandbox.pid_file().exists())
+            .await;
+
+        let log = sandbox.log();
+        assert!(!log.contains("STT error"), "log:\n{log}");
+        assert_eq!(
+            words(&sandbox.typed().replace('|', "")),
+            expected,
+            "log:\n{log}"
+        );
+        let now = server.pid();
+        assert!(now.is_some());
+        if pid.is_some() {
+            assert_eq!(now, pid, "the server should stay up between dictations");
+        }
+        pid = now;
+    }
+}
+
+#[tokio::test]
+#[ignore = "runs the real Phonon-2 model through uv"]
+async fn phonon_transcribes_real_speech() {
+    local_transcribes_real_speech("phonon-2").await;
+}
+
+#[tokio::test]
+#[ignore = "runs the real Parakeet Redux model through uv"]
+async fn parakeet_redux_transcribes_real_speech() {
+    local_transcribes_real_speech("parakeet-redux").await;
 }

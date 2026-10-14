@@ -1,4 +1,5 @@
-//! Live dictation for Hyprland, via ElevenLabs, Cartesia or OpenRouter.
+//! Live dictation for Hyprland, via ElevenLabs, Cartesia, OpenRouter or a
+//! local model.
 
 mod audio;
 mod hyprland;
@@ -9,7 +10,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     os::unix::process::CommandExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command as Process, Stdio},
     thread,
     time::Duration,
@@ -26,7 +27,9 @@ use tokio::{
 
 use audio::Microphone;
 use overlay::{Event, Overlay, Phase};
-use provider::{Connection, Provider, Receive, Transmit, Update, cartesia, elevenlabs, openrouter};
+use provider::{
+    Connection, Provider, Receive, Transmit, Update, cartesia, elevenlabs, local, openrouter,
+};
 
 /// How long to wait for the final transcript after stopping.
 const FINISH_TIMEOUT: Duration = Duration::from_millis(4500);
@@ -148,6 +151,9 @@ fn run(command: Cmd) -> Result<()> {
                 Some(provider) => provider,
                 None => choose_provider()?,
             };
+            if let Some(model) = provider.local_model() {
+                local::prepare(model)?;
+            }
             provider.save()?;
             println!("Using {}", provider.label());
             Ok(())
@@ -195,7 +201,11 @@ fn login() -> Result<()> {
     let mut saved: usize = 0;
     let mut seen: Vec<&str> = Vec::new();
     for provider in Provider::ALL {
-        let name: &str = provider.key_name();
+        let name: &str = match provider.key_name() {
+            Some(name) => name,
+            // Local models need no key.
+            None => continue,
+        };
         // Providers from the same company share a key.
         if seen.contains(&name) {
             continue;
@@ -281,12 +291,12 @@ impl Drop for PidFile {
 async fn record(paths: &Paths) -> Result<()> {
     let _pid: PidFile = PidFile::create(paths.pid.clone())?;
     let overlay: Overlay = Overlay::spawn();
-    let result: Result<()> = session(&overlay).await;
+    let result: Result<()> = session(&overlay, &paths.runtime).await;
     overlay.close();
     result
 }
 
-async fn session(overlay: &Overlay) -> Result<()> {
+async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
     // Listen for stop requests before anything slow, so an early one isn't fatal.
     let mut stop: StopSignals = StopSignals::new()?;
     let provider: Provider = Provider::current()?;
@@ -315,6 +325,15 @@ async fn session(overlay: &Overlay) -> Result<()> {
                 Err(error) => elevenlabs_fallback(&recording, error).await?,
             };
             type_transcript(text).await;
+            Ok(())
+        }
+        Provider::Phonon2 | Provider::ParakeetRedux => {
+            let model: local::Model = provider.local_model().context("not a local provider")?;
+            let server: local::Server = local::Server::new(model, runtime);
+            // Lazily, so a first start loads the model while you speak.
+            server.ensure_running()?;
+            let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
+            type_transcript(server.transcribe(&recording).await?).await;
             Ok(())
         }
     }
