@@ -9,7 +9,7 @@ Live dictation for Hyprland. Press **End** to start and again to stop. Your spee
 ## Requirements
 
 - Rust
-- `pw-record` (PipeWire), `wtype`, a notification daemon
+- `pw-record` (PipeWire), `wtype`, `wl-clipboard`, a notification daemon
 - Hyprland (or another compositor with `wlr-layer-shell`)
 - An API key for a cloud provider, or [uv](https://docs.astral.sh/uv/) for the local models
 

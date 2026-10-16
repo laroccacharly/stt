@@ -1,6 +1,6 @@
 //! End-to-end tests: run the real `stt` binary against fake ElevenLabs,
-//! Cartesia and OpenRouter servers, a fake `pw-record` (microphone) and a fake
-//! `wtype` (keyboard). The `#[ignore]`d
+//! Cartesia and OpenRouter servers, a fake `pw-record` (microphone), a fake
+//! `wtype` (keyboard) and a fake `wl-copy` (clipboard). The `#[ignore]`d
 //! tests use the real Cartesia API and the real local models, and only run
 //! with `cargo test -- --ignored`.
 
@@ -147,7 +147,18 @@ impl Sandbox {
             "pw-record",
             r#"while :; do printf '\x00\x10\x00\xf0%.0s' $(seq 800); sleep 0.1; done"#,
         );
-        script(&bin, "wtype", r#"printf '%s|' "$1" >> "$STT_TYPED""#);
+        // Typed text and pasted clipboard contents land in the same log; the
+        // paste keystroke itself isn't logged.
+        script(
+            &bin,
+            "wtype",
+            r#"[ "$1" = -M ] || printf '%s|' "$1" >> "$STT_TYPED""#,
+        );
+        script(
+            &bin,
+            "wl-copy",
+            r#"cat >> "$STT_TYPED"; printf '|' >> "$STT_TYPED""#,
+        );
         fs::create_dir(dir.path().join("runtime")).unwrap();
         Self {
             dir,

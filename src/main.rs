@@ -37,6 +37,9 @@ const FINISH_TIMEOUT: Duration = Duration::from_millis(4500);
 const NOTIFICATION_ID: u32 = 47511;
 /// Start/stop notifications are off for now; errors always notify.
 const ENABLE_STATUS_NOTIFICATIONS: bool = false;
+/// Batch transcripts arrive whole, so paste them through the clipboard
+/// (overwriting it) instead of typing them key by key. Set to false to type them.
+const PASTE_BATCH_TRANSCRIPTS: bool = true;
 
 #[derive(Parser)]
 #[command(version, about = "Live speech to text for Hyprland")]
@@ -391,11 +394,18 @@ async fn record_until_stopped(overlay: &Overlay, stop: &mut StopSignals) -> Resu
     Ok(recording)
 }
 
-/// Types a batch transcript into the focused window.
+/// Inserts a batch transcript into the focused window.
 async fn type_transcript(text: String) {
-    let mut typist: Typist = Typist::spawn();
-    let typed_any: bool = typist.type_text(text);
-    typist.finish().await;
+    let typed_any: bool = !text.is_empty();
+    if PASTE_BATCH_TRANSCRIPTS {
+        if typed_any && let Err(error) = paste(&text).await {
+            typing_failed(&format!("{error:#}")).await;
+        }
+    } else {
+        let mut typist: Typist = Typist::spawn();
+        typist.type_text(text);
+        typist.finish().await;
+    }
     if ENABLE_STATUS_NOTIFICATIONS {
         notify(
             "STT finished",
@@ -409,6 +419,40 @@ async fn type_transcript(text: String) {
         .join()
         .ok();
     }
+}
+
+/// Copies `text` to the clipboard and presses Shift+Insert, which pastes in
+/// terminals and GUI apps alike (Omarchy's universal paste).
+async fn paste(text: &str) -> Result<()> {
+    let mut copy: tokio::process::Child = tokio::process::Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .context("wl-copy")?;
+    let mut stdin: tokio::process::ChildStdin = copy.stdin.take().context("wl-copy stdin")?;
+    tokio::io::AsyncWriteExt::write_all(&mut stdin, text.as_bytes()).await?;
+    drop(stdin);
+    if !copy.wait().await?.success() {
+        bail!("wl-copy failed");
+    }
+    let output: std::process::Output = tokio::process::Command::new("wtype")
+        .args(["-M", "shift", "-k", "Insert", "-m", "shift"])
+        .stdout(Stdio::null())
+        .output()
+        .await
+        .context("wtype")?;
+    if !output.status.success() {
+        let error: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "{}",
+            if error.is_empty() {
+                "Check the focused window"
+            } else {
+                &error
+            }
+        );
+    }
+    Ok(())
 }
 
 /// Transcribes the recording with ElevenLabs after OpenRouter failed with
