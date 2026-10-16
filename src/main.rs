@@ -11,7 +11,7 @@ use std::{
     io::Write,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command as Process, Stdio},
+    process::{Command as Process, Output, Stdio},
     thread,
     time::Duration,
 };
@@ -20,6 +20,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use rustix::process::{Pid, Signal, kill_process};
 use tokio::{
+    io::AsyncWriteExt,
     signal::unix::{Signal as UnixSignal, SignalKind, signal},
     sync::mpsc,
     time::timeout,
@@ -396,9 +397,9 @@ async fn record_until_stopped(overlay: &Overlay, stop: &mut StopSignals) -> Resu
 
 /// Inserts a batch transcript into the focused window.
 async fn type_transcript(text: String) {
-    let typed_any: bool = !text.is_empty();
+    let has_speech: bool = !text.is_empty();
     if PASTE_BATCH_TRANSCRIPTS {
-        if typed_any && let Err(error) = paste(&text).await {
+        if has_speech && let Err(error) = paste(&text).await {
             typing_failed(&format!("{error:#}")).await;
         }
     } else {
@@ -409,7 +410,7 @@ async fn type_transcript(text: String) {
     if ENABLE_STATUS_NOTIFICATIONS {
         notify(
             "STT finished",
-            if typed_any {
+            if has_speech {
                 "Dictation inserted"
             } else {
                 "No speech detected"
@@ -430,13 +431,18 @@ async fn paste(text: &str) -> Result<()> {
         .spawn()
         .context("wl-copy")?;
     let mut stdin: tokio::process::ChildStdin = copy.stdin.take().context("wl-copy stdin")?;
-    tokio::io::AsyncWriteExt::write_all(&mut stdin, text.as_bytes()).await?;
+    stdin.write_all(text.as_bytes()).await?;
     drop(stdin);
     if !copy.wait().await?.success() {
         bail!("wl-copy failed");
     }
-    let output: std::process::Output = tokio::process::Command::new("wtype")
-        .args(["-M", "shift", "-k", "Insert", "-m", "shift"])
+    wtype(&["-M", "shift", "-k", "Insert", "-m", "shift"]).await
+}
+
+/// Runs `wtype` with `args`, failing with its stderr.
+async fn wtype(args: &[&str]) -> Result<()> {
+    let output: Output = tokio::process::Command::new("wtype")
+        .args(args)
         .stdout(Stdio::null())
         .output()
         .await
@@ -570,24 +576,8 @@ impl Typist {
         let mut segments: mpsc::UnboundedReceiver<String> = channel.1;
         let worker: tokio::task::JoinHandle<()> = tokio::spawn(async move {
             while let Some(segment) = segments.recv().await {
-                match tokio::process::Command::new("wtype")
-                    .arg(&segment)
-                    .stdout(Stdio::null())
-                    .output()
-                    .await
-                {
-                    Ok(output) if output.status.success() => {}
-                    Ok(output) => {
-                        let error: std::borrow::Cow<'_, str> =
-                            String::from_utf8_lossy(&output.stderr);
-                        typing_failed(if error.is_empty() {
-                            "Check the focused window"
-                        } else {
-                            &error
-                        })
-                        .await;
-                    }
-                    Err(error) => typing_failed(&format!("wtype: {error}")).await,
+                if let Err(error) = wtype(&[&segment]).await {
+                    typing_failed(&format!("{error:#}")).await;
                 }
             }
         });
