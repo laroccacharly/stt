@@ -1,7 +1,7 @@
-//! Local models (Phonon-2, Parakeet Redux, Bark 3.0 Clean), each served by a
-//! long-lived Python process run through `uv`. The server is started on first
-//! use and stays up, so the model loads once; it loads while the first
-//! recording is made.
+//! Local models (Phonon-2, Parakeet Redux, Bark 3.0 Clean, tinybark), each
+//! served by a long-lived Python process run through `uv`. The server is
+//! started on first use and stays up, so the model loads once; it loads while
+//! the first recording is made.
 
 use std::{
     fs::{self, File},
@@ -20,6 +20,9 @@ use tokio::{
 
 /// The shared server loop, imported by each model's script.
 const SERVE: &str = include_str!("local/serve.py");
+/// Stands for stt's source directory in model scripts, so they can depend on
+/// checkouts next to it (tinybark).
+const STT_DIR: &str = "$STT_DIR";
 /// How long a server may take to come up: the very first start installs its
 /// dependencies and downloads the model.
 const START_TIMEOUT: Duration = Duration::from_secs(600);
@@ -143,7 +146,10 @@ fn uv(model: &'static Model) -> Result<Command> {
     fs::create_dir_all(&dir)?;
     write_if_changed(&dir.join("serve.py"), SERVE)?;
     let script: PathBuf = dir.join(format!("{}.py", model.name));
-    write_if_changed(&script, model.script)?;
+    write_if_changed(
+        &script,
+        &model.script.replace(STT_DIR, env!("CARGO_MANIFEST_DIR")),
+    )?;
     let mut command: Command = Command::new("uv");
     command.args(["run", "--quiet", "--script"]).arg(script);
     Ok(command)

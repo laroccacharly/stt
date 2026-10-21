@@ -165,6 +165,20 @@ providers! {
             script: include_str!("local/bark.py"),
         }),
     },
+    /// Local: Underdog Bark 3.0 Clean on this machine's GPU through tinybark
+    /// (tinygrad), from the tinybark checkout next to stt's.
+    TinyBark {
+        name: "tinybark",
+        aliases: &[],
+        label: "Underdog Bark 3.0 Clean (local GPU, tinybark)",
+        company: "Conway Research",
+        key: None,
+        backend: Backend::Local(&local::Model {
+            // Not "tinybark": the script would shadow the package it imports.
+            name: "tinybark_server",
+            script: include_str!("local/tinybark_server.py"),
+        }),
+    },
 }
 
 impl Provider {
