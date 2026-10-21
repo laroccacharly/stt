@@ -5,55 +5,169 @@ pub mod elevenlabs;
 pub mod local;
 pub mod openrouter;
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, future::Future, path::PathBuf, pin::Pin};
 
 use anyhow::{Context, Result, bail};
-use clap::ValueEnum;
+use clap::{ValueEnum, builder::PossibleValue};
 use secret_service::{Collection, EncryptionType, Item, SearchItemsResult, SecretService};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-/// Which backend transcribes: the one chosen with `stt provider set`, else
-/// ElevenLabs realtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
-pub enum Provider {
+/// A boxed future, so provider functions can be stored in the registry.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
+/// Connects a realtime provider with an API key.
+pub type Connect = for<'a> fn(&'a str) -> BoxFuture<'a, Result<Live>>;
+
+/// Transcribes a whole recording with an API key.
+pub type Transcribe = for<'a> fn(&'a str, &'a [u8]) -> BoxFuture<'a, Result<String>>;
+
+/// What a provider needs from the dictation session.
+#[derive(Clone, Copy)]
+pub enum Backend {
+    Realtime(Connect),
+    Batch {
+        transcribe: Transcribe,
+        /// Fall back to ElevenLabs batch when transcription fails.
+        fallback: bool,
+    },
+    Local(&'static local::Model),
+}
+
+/// Everything about a provider, declared once in `providers!`.
+pub struct Definition {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub label: &'static str,
+    pub company: &'static str,
+    pub key: Option<&'static str>,
+    pub backend: Backend,
+}
+
+/// Declares the provider list once: the enum, `ALL`, and the metadata behind
+/// `name`, `label`, `company`, `key_name` and `backend` are all generated.
+macro_rules! providers {
+    ($(
+        $(#[$meta:meta])*
+        $variant:ident {
+            name: $name:literal,
+            aliases: $aliases:expr,
+            label: $label:literal,
+            company: $company:literal,
+            key: $key:expr,
+            backend: $backend:expr $(,)?
+        }
+    ),* $(,)?) => {
+        /// Which backend transcribes: the one chosen with `stt provider set`.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Provider {
+            $($(#[$meta])* $variant),*
+        }
+
+        impl Provider {
+            pub const ALL: &'static [Self] = &[$(Self::$variant),*];
+
+            fn definition(self) -> &'static Definition {
+                static DEFINITIONS: &[Definition] = &[
+                    $(Definition {
+                        name: $name,
+                        aliases: $aliases,
+                        label: $label,
+                        company: $company,
+                        key: $key,
+                        backend: $backend,
+                    }),*
+                ];
+                &DEFINITIONS[self as usize]
+            }
+        }
+    };
+}
+
+providers! {
     /// Realtime: text is typed while you speak.
     // `elevenlabs` is its name from before the batch variant existed.
-    #[value(name = "elevenlabs-realtime", alias = "elevenlabs")]
-    #[serde(rename = "elevenlabs-realtime", alias = "elevenlabs")]
-    ElevenLabsRealtime,
+    ElevenLabsRealtime {
+        name: "elevenlabs-realtime",
+        aliases: &["elevenlabs"],
+        label: "ElevenLabs realtime",
+        company: "ElevenLabs",
+        key: Some("ELEVENLABS_API_KEY"),
+        backend: Backend::Realtime(elevenlabs::connect_boxed),
+    },
     /// Batch: the recording is transcribed once you stop, with Scribe v2.
-    #[value(name = "elevenlabs-batch")]
-    #[serde(rename = "elevenlabs-batch")]
-    ElevenLabsBatch,
+    ElevenLabsBatch {
+        name: "elevenlabs-batch",
+        aliases: &[],
+        label: "ElevenLabs batch",
+        company: "ElevenLabs",
+        key: Some("ELEVENLABS_API_KEY"),
+        backend: Backend::Batch {
+            transcribe: elevenlabs::transcribe_boxed,
+            fallback: false,
+        },
+    },
     /// Realtime, with Cartesia Ink 2.
-    #[value(name = "cartesia")]
-    #[serde(rename = "cartesia")]
-    Cartesia,
+    Cartesia {
+        name: "cartesia",
+        aliases: &[],
+        label: "Cartesia",
+        company: "Cartesia",
+        key: Some("CARTESIA_API_KEY"),
+        backend: Backend::Realtime(cartesia::connect_boxed),
+    },
     /// Batch: the recording is transcribed once you stop; falls back to
     /// ElevenLabs batch if that fails.
-    #[value(name = "openrouter")]
-    #[serde(rename = "openrouter")]
-    OpenRouter,
+    OpenRouter {
+        name: "openrouter",
+        aliases: &[],
+        label: "OpenRouter",
+        company: "OpenRouter",
+        key: Some("OPENROUTER_API_KEY"),
+        backend: Backend::Batch {
+            transcribe: openrouter::transcribe_boxed,
+            fallback: true,
+        },
+    },
     /// Local: Phonon-2 on this machine's CPU, English only.
-    #[value(name = "phonon-2")]
-    #[serde(rename = "phonon-2")]
-    Phonon2,
+    Phonon2 {
+        name: "phonon-2",
+        aliases: &[],
+        label: "Phonon-2 (local)",
+        company: "Fermion Research",
+        key: None,
+        backend: Backend::Local(&local::Model {
+            name: "phonon",
+            script: include_str!("local/phonon.py"),
+        }),
+    },
     /// Local: Parakeet Redux on this machine's CPU, 25 languages.
-    #[value(name = "parakeet-redux")]
-    #[serde(rename = "parakeet-redux")]
-    ParakeetRedux,
+    ParakeetRedux {
+        name: "parakeet-redux",
+        aliases: &[],
+        label: "Parakeet Redux (local)",
+        company: "Moondream",
+        key: None,
+        backend: Backend::Local(&local::Model {
+            name: "parakeet_redux",
+            script: include_str!("local/parakeet_redux.py"),
+        }),
+    },
+    /// Local: Underdog Bark 3.0 Clean on this machine's CPU, English only,
+    /// with fillers and false starts removed.
+    Bark3Clean {
+        name: "bark-3.0-clean",
+        aliases: &[],
+        label: "Underdog Bark 3.0 Clean (local)",
+        company: "Conway Research",
+        key: None,
+        backend: Backend::Local(&local::Model {
+            name: "bark",
+            script: include_str!("local/bark.py"),
+        }),
+    },
 }
 
 impl Provider {
-    pub const ALL: [Self; 6] = [
-        Self::ElevenLabsRealtime,
-        Self::ElevenLabsBatch,
-        Self::Cartesia,
-        Self::OpenRouter,
-        Self::Phonon2,
-        Self::ParakeetRedux,
-    ];
-
     /// The provider in use now.
     pub fn current() -> Result<Self> {
         let config: Option<Config> =
@@ -70,56 +184,77 @@ impl Provider {
 
     /// The name used on the command line and in the config.
     pub fn name(self) -> &'static str {
-        match self {
-            Self::ElevenLabsRealtime => "elevenlabs-realtime",
-            Self::ElevenLabsBatch => "elevenlabs-batch",
-            Self::Cartesia => "cartesia",
-            Self::OpenRouter => "openrouter",
-            Self::Phonon2 => "phonon-2",
-            Self::ParakeetRedux => "parakeet-redux",
-        }
+        self.definition().name
     }
 
     /// The environment variable and keyring account holding the API key;
     /// local models have none.
     pub fn key_name(self) -> Option<&'static str> {
-        match self {
-            Self::ElevenLabsRealtime | Self::ElevenLabsBatch => Some("ELEVENLABS_API_KEY"),
-            Self::Cartesia => Some("CARTESIA_API_KEY"),
-            Self::OpenRouter => Some("OPENROUTER_API_KEY"),
-            Self::Phonon2 | Self::ParakeetRedux => None,
-        }
+        self.definition().key
     }
 
     /// The model run on this machine, for local providers.
-    pub fn local_model(self) -> Option<local::Model> {
-        match self {
-            Self::Phonon2 => Some(local::Model::Phonon2),
-            Self::ParakeetRedux => Some(local::Model::ParakeetRedux),
+    pub fn local_model(self) -> Option<&'static local::Model> {
+        match self.definition().backend {
+            Backend::Local(model) => Some(model),
             _ => None,
         }
     }
 
+    /// How this provider transcribes.
+    pub fn backend(self) -> Backend {
+        self.definition().backend
+    }
+
+    /// Whether `name` is this provider's name or one of its aliases.
+    pub fn matches(self, name: &str) -> bool {
+        let definition: &Definition = self.definition();
+        definition.name.eq_ignore_ascii_case(name)
+            || definition
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(name))
+    }
+
     /// The company behind the provider, for API key messages.
     pub fn company(self) -> &'static str {
-        match self {
-            Self::ElevenLabsRealtime | Self::ElevenLabsBatch => "ElevenLabs",
-            Self::Cartesia => "Cartesia",
-            Self::OpenRouter => "OpenRouter",
-            Self::Phonon2 => "Fermion Research",
-            Self::ParakeetRedux => "Moondream",
-        }
+        self.definition().company
     }
 
     pub fn label(self) -> &'static str {
-        match self {
-            Self::ElevenLabsRealtime => "ElevenLabs realtime",
-            Self::ElevenLabsBatch => "ElevenLabs batch",
-            Self::Cartesia => "Cartesia",
-            Self::OpenRouter => "OpenRouter",
-            Self::Phonon2 => "Phonon-2 (local)",
-            Self::ParakeetRedux => "Parakeet Redux (local)",
+        self.definition().label
+    }
+}
+
+impl ValueEnum for Provider {
+    fn value_variants<'a>() -> &'a [Self] {
+        Self::ALL
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        let definition: &Definition = self.definition();
+        let mut value: PossibleValue = PossibleValue::new(definition.name).help(definition.label);
+        for alias in definition.aliases {
+            value = value.alias(*alias);
         }
+        Some(value)
+    }
+}
+
+impl Serialize for Provider {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for Provider {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let name: String = String::deserialize(deserializer)?;
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|provider| provider.matches(&name))
+            .ok_or_else(|| de::Error::custom(format!("unknown provider: {name}")))
     }
 }
 
@@ -161,6 +296,63 @@ pub struct Connection<T: Transmit, R: Receive> {
     pub receiver: R,
 }
 
+/// A realtime connection with its concrete types erased, so the provider
+/// registry can hand one to the session without a per-provider match.
+pub struct Live {
+    pub sender: Box<dyn TransmitDyn>,
+    pub receiver: Box<dyn ReceiveDyn>,
+}
+
+impl Live {
+    pub fn new<T, R>(connection: Connection<T, R>) -> Self
+    where
+        T: Transmit + 'static,
+        R: Receive + 'static,
+    {
+        Self {
+            sender: Box::new(connection.sender),
+            receiver: Box::new(connection.receiver),
+        }
+    }
+}
+
+/// Object-safe version of `Transmit`, with boxed futures.
+pub trait TransmitDyn {
+    fn send_audio<'a>(&'a mut self, pcm: &'a [u8]) -> BoxFuture<'a, Result<()>>;
+    fn commit<'a>(&'a mut self) -> BoxFuture<'a, Result<()>>;
+    fn close(self: Box<Self>) -> BoxFuture<'static, ()>;
+}
+
+impl<T: Transmit + 'static> TransmitDyn for T {
+    fn send_audio<'a>(&'a mut self, pcm: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(Transmit::send_audio(self, pcm))
+    }
+
+    fn commit<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
+        Box::pin(Transmit::commit(self))
+    }
+
+    fn close(self: Box<Self>) -> BoxFuture<'static, ()> {
+        Box::pin(async move { Transmit::close(*self).await })
+    }
+}
+
+/// Object-safe version of `Receive`, with boxed futures.
+pub trait ReceiveDyn {
+    fn one_transcript_per_commit(&self) -> bool;
+    fn next<'a>(&'a mut self) -> BoxFuture<'a, Option<Result<Update>>>;
+}
+
+impl<T: Receive> ReceiveDyn for T {
+    fn one_transcript_per_commit(&self) -> bool {
+        T::ONE_TRANSCRIPT_PER_COMMIT
+    }
+
+    fn next<'a>(&'a mut self) -> BoxFuture<'a, Option<Result<Update>>> {
+        Box::pin(Receive::next(self))
+    }
+}
+
 /// Settings saved by `stt provider set`.
 #[derive(Serialize, Deserialize)]
 struct Config {
@@ -186,7 +378,7 @@ fn install_crypto() {
 
 /// Reads the provider's key from its environment variable, else from the
 /// keyring entry saved by `stt login`.
-async fn api_key(provider: Provider) -> Result<String> {
+pub(crate) async fn api_key(provider: Provider) -> Result<String> {
     let name: &str = provider
         .key_name()
         .with_context(|| format!("{} needs no API key", provider.label()))?;
@@ -233,4 +425,34 @@ pub async fn save_api_key(provider: Provider, key: &str) -> Result<()> {
         )
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_names_and_key_requirements_are_consistent() {
+        let mut names: Vec<&str> = Vec::new();
+        for &provider in Provider::ALL {
+            let name: &str = provider.name();
+            assert!(!names.contains(&name), "duplicate provider name: {name}");
+            names.push(name);
+            assert!(provider.matches(name));
+            for alias in provider.definition().aliases {
+                assert!(provider.matches(alias), "{name} alias {alias}");
+            }
+            let has_key: bool = provider.key_name().is_some();
+            let is_local: bool = matches!(provider.backend(), Backend::Local(_));
+            assert_ne!(has_key, is_local, "{name}");
+        }
+    }
+
+    #[test]
+    fn serializes_by_name_and_reads_aliases() {
+        let json: String = serde_json::to_string(&Provider::Bark3Clean).unwrap();
+        assert_eq!(json, "\"bark-3.0-clean\"");
+        let provider: Provider = serde_json::from_str("\"elevenlabs\"").unwrap();
+        assert_eq!(provider, Provider::ElevenLabsRealtime);
+    }
 }

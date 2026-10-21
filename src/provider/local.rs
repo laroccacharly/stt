@@ -1,6 +1,7 @@
-//! Local models (Phonon-2, Parakeet Redux), each served by a long-lived Python
-//! process run through `uv`. The server is started on first use and stays up,
-//! so the model loads once; it loads while the first recording is made.
+//! Local models (Phonon-2, Parakeet Redux, Bark 3.0 Clean), each served by a
+//! long-lived Python process run through `uv`. The server is started on first
+//! use and stays up, so the model loads once; it loads while the first
+//! recording is made.
 
 use std::{
     fs::{self, File},
@@ -23,32 +24,16 @@ const SERVE: &str = include_str!("local/serve.py");
 /// dependencies and downloads the model.
 const START_TIMEOUT: Duration = Duration::from_secs(600);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Model {
-    Phonon2,
-    ParakeetRedux,
-}
-
-impl Model {
-    /// Script name, also used for the socket, PID and log files.
-    fn name(self) -> &'static str {
-        match self {
-            Self::Phonon2 => "phonon",
-            Self::ParakeetRedux => "parakeet_redux",
-        }
-    }
-
-    fn script(self) -> &'static str {
-        match self {
-            Self::Phonon2 => include_str!("local/phonon.py"),
-            Self::ParakeetRedux => include_str!("local/parakeet_redux.py"),
-        }
-    }
+/// A local model: its name (also the socket, PID and log file) and its server
+/// script. Both are declared in the provider registry.
+pub struct Model {
+    pub name: &'static str,
+    pub script: &'static str,
 }
 
 /// A model's server, addressed through files in stt's runtime directory.
 pub struct Server {
-    model: Model,
+    model: &'static Model,
     socket: PathBuf,
     pid: PathBuf,
     log: PathBuf,
@@ -61,8 +46,8 @@ struct Reply {
 }
 
 impl Server {
-    pub fn new(model: Model, runtime: &Path) -> Self {
-        let name: &str = model.name();
+    pub fn new(model: &'static Model, runtime: &Path) -> Self {
+        let name: &str = model.name;
         Self {
             model,
             socket: runtime.join(format!("{name}.sock")),
@@ -87,7 +72,7 @@ impl Server {
             .spawn()
             .context("failed to start uv; is it installed?")?;
         fs::write(&self.pid, child.id().to_string())?;
-        eprintln!("started the {} server", self.model.name());
+        eprintln!("started the {} server", self.model.name);
         Ok(())
     }
 
@@ -98,13 +83,11 @@ impl Server {
         let mut stream: UnixStream = loop {
             match UnixStream::connect(&self.socket).await {
                 Ok(stream) => break stream,
-                Err(_) if !self.alive() => bail!(
-                    "The {} server exited: {}",
-                    self.model.name(),
-                    self.log_tail()
-                ),
+                Err(_) if !self.alive() => {
+                    bail!("The {} server exited: {}", self.model.name, self.log_tail())
+                }
                 Err(_) if Instant::now() > deadline => {
-                    bail!("The {} server did not start in time", self.model.name())
+                    bail!("The {} server did not start in time", self.model.name)
                 }
                 Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
             }
@@ -138,20 +121,20 @@ impl Server {
 }
 
 /// Installs the model's dependencies and downloads it, showing progress.
-pub fn prepare(model: Model) -> Result<()> {
+pub fn prepare(model: &'static Model) -> Result<()> {
     let status: std::process::ExitStatus = uv(model)?
         .arg("--prepare")
         .status()
         .context("failed to start uv; is it installed?")?;
     if !status.success() {
-        bail!("Downloading the {} model failed", model.name());
+        bail!("Downloading the {} model failed", model.name);
     }
     Ok(())
 }
 
 /// `uv run` on the model's script, written out to stt's cache directory: uv
 /// keeps the script's environment keyed on its path.
-fn uv(model: Model) -> Result<Command> {
+fn uv(model: &'static Model) -> Result<Command> {
     let base: PathBuf = match std::env::var_os("XDG_CACHE_HOME").filter(|dir| !dir.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".cache"),
@@ -159,8 +142,8 @@ fn uv(model: Model) -> Result<Command> {
     let dir: PathBuf = base.join("stt");
     fs::create_dir_all(&dir)?;
     write_if_changed(&dir.join("serve.py"), SERVE)?;
-    let script: PathBuf = dir.join(format!("{}.py", model.name()));
-    write_if_changed(&script, model.script())?;
+    let script: PathBuf = dir.join(format!("{}.py", model.name));
+    write_if_changed(&script, model.script)?;
     let mut command: Command = Command::new("uv");
     command.args(["run", "--quiet", "--script"]).arg(script);
     Ok(command)

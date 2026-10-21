@@ -1,6 +1,6 @@
 # stt
 
-Live dictation for Hyprland. Press **End** to start and again to stop. Your speech is transcribed by a cloud speech-to-text provider or a local model (Phonon-2, Parakeet Redux), the text is typed into the focused window, and a waveform overlay shows you're recording.
+Live dictation for Hyprland. Press **End** to start and again to stop. Your speech is transcribed by a cloud speech-to-text provider or a local model (Phonon-2, Parakeet Redux, Underdog Bark 3.0 Clean), the text is typed into the focused window, and a waveform overlay shows you're recording.
 
 ## Demo
 

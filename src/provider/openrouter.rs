@@ -6,14 +6,9 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::audio::SAMPLE_RATE;
+use crate::{audio::SAMPLE_RATE, provider::BoxFuture};
 
 const MODEL: &str = "microsoft/mai-transcribe-2";
-
-/// Reads `OPENROUTER_API_KEY` from the environment or the keyring.
-pub async fn api_key() -> Result<String> {
-    super::api_key(super::Provider::OpenRouter).await
-}
 
 #[derive(Deserialize)]
 struct Transcription {
@@ -63,6 +58,11 @@ pub async fn transcribe(api_key: &str, pcm: &[u8]) -> Result<String> {
     let transcription: Transcription =
         serde_json::from_str(&text).context("OpenRouter sent an unexpected response")?;
     Ok(transcription.text.trim().to_owned())
+}
+
+/// `transcribe` as a boxed future, for the provider registry.
+pub fn transcribe_boxed<'a>(api_key: &'a str, pcm: &'a [u8]) -> BoxFuture<'a, Result<String>> {
+    Box::pin(transcribe(api_key, pcm))
 }
 
 /// Wraps raw PCM in a WAV header.

@@ -28,9 +28,7 @@ use tokio::{
 
 use audio::Microphone;
 use overlay::{Event, Overlay, Phase};
-use provider::{
-    Connection, Provider, Receive, Transmit, Update, cartesia, elevenlabs, local, openrouter,
-};
+use provider::{Backend, Live, Provider, ReceiveDyn, TransmitDyn, Update, elevenlabs, local};
 
 /// How long to wait for the final transcript after stopping.
 const FINISH_TIMEOUT: Duration = Duration::from_millis(4500);
@@ -144,7 +142,7 @@ fn run(command: Cmd) -> Result<()> {
         Cmd::Login => login(),
         Cmd::Provider(ProviderCmd::Ls) => {
             let current: Provider = Provider::current()?;
-            for provider in Provider::ALL {
+            for &provider in Provider::ALL {
                 let marker: &str = if provider == current { "*" } else { " " };
                 println!("{marker} {}", provider.name());
             }
@@ -174,7 +172,7 @@ fn run(command: Cmd) -> Result<()> {
 /// Ask on stdin which provider to use, by number or name.
 fn choose_provider() -> Result<Provider> {
     let current: Provider = Provider::current()?;
-    for (i, provider) in Provider::ALL.into_iter().enumerate() {
+    for (i, &provider) in Provider::ALL.iter().enumerate() {
         let marker: &str = if provider == current { "*" } else { " " };
         println!("{marker} {}. {}", i + 1, provider.name());
     }
@@ -192,8 +190,8 @@ fn choose_provider() -> Result<Provider> {
         }
         bail!("Unknown provider: {answer}");
     }
-    for provider in Provider::ALL {
-        if provider.name().eq_ignore_ascii_case(answer) {
+    for &provider in Provider::ALL {
+        if provider.matches(answer) {
             return Ok(provider);
         }
     }
@@ -204,7 +202,7 @@ fn login() -> Result<()> {
     let runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new()?;
     let mut saved: usize = 0;
     let mut seen: Vec<&str> = Vec::new();
-    for provider in Provider::ALL {
+    for &provider in Provider::ALL {
         let name: &str = match provider.key_name() {
             Some(name) => name,
             // Local models need no key.
@@ -304,35 +302,27 @@ async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
     // Listen for stop requests before anything slow, so an early one isn't fatal.
     let mut stop: StopSignals = StopSignals::new()?;
     let provider: Provider = Provider::current()?;
-    match provider {
-        Provider::ElevenLabsRealtime => {
-            let connection: Connection<elevenlabs::Sender, elevenlabs::Receiver> =
-                elevenlabs::connect(&elevenlabs::api_key().await?).await?;
+    match provider.backend() {
+        Backend::Realtime(connect) => {
+            let key: String = provider::api_key(provider).await?;
+            let connection: Live = connect(&key).await?;
             realtime_session(overlay, &mut stop, provider, connection).await
         }
-        Provider::Cartesia => {
-            let connection: Connection<cartesia::Sender, cartesia::Receiver> =
-                cartesia::connect(&cartesia::api_key().await?).await?;
-            realtime_session(overlay, &mut stop, provider, connection).await
-        }
-        Provider::ElevenLabsBatch => {
-            let key: String = elevenlabs::api_key().await?;
+        Backend::Batch {
+            transcribe,
+            fallback,
+        } => {
+            let key: String = provider::api_key(provider).await?;
             let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
-            type_transcript(elevenlabs::transcribe(&key, &recording).await?).await;
-            Ok(())
-        }
-        Provider::OpenRouter => {
-            let key: String = openrouter::api_key().await?;
-            let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
-            let text: String = match openrouter::transcribe(&key, &recording).await {
+            let text: String = match transcribe(&key, &recording).await {
                 Ok(text) => text,
-                Err(error) => elevenlabs_fallback(&recording, error).await?,
+                Err(error) if fallback => elevenlabs_fallback(&recording, error).await?,
+                Err(error) => return Err(error),
             };
             type_transcript(text).await;
             Ok(())
         }
-        Provider::Phonon2 | Provider::ParakeetRedux => {
-            let model: local::Model = provider.local_model().context("not a local provider")?;
+        Backend::Local(model) => {
             let server: local::Server = local::Server::new(model, runtime);
             // Lazily, so a first start loads the model while you speak.
             server.ensure_running()?;
@@ -465,7 +455,7 @@ async fn wtype(args: &[&str]) -> Result<()> {
 /// `error`, reporting both failures if this fails too.
 async fn elevenlabs_fallback(recording: &[u8], error: anyhow::Error) -> Result<String> {
     eprintln!("{error:#}; falling back to ElevenLabs");
-    let fallback: Result<String> = match elevenlabs::api_key().await {
+    let fallback: Result<String> = match provider::api_key(Provider::ElevenLabsBatch).await {
         Ok(key) => elevenlabs::transcribe(&key, recording).await,
         Err(key_error) => Err(key_error),
     };
@@ -475,14 +465,15 @@ async fn elevenlabs_fallback(recording: &[u8], error: anyhow::Error) -> Result<S
 }
 
 /// Streams audio to a realtime backend and types each segment as it is committed.
-async fn realtime_session<T: Transmit, R: Receive>(
+async fn realtime_session(
     overlay: &Overlay,
     stop: &mut StopSignals,
     provider: Provider,
-    connection: Connection<T, R>,
+    connection: Live,
 ) -> Result<()> {
-    let mut tx: T = connection.sender;
-    let mut rx: R = connection.receiver;
+    let mut tx: Box<dyn TransmitDyn> = connection.sender;
+    let mut rx: Box<dyn ReceiveDyn> = connection.receiver;
+    let one_transcript_per_commit: bool = rx.one_transcript_per_commit();
     let name: &str = provider.company();
     eprintln!("{name} WebSocket connected");
     let mut mic: Microphone = Microphone::start()?;
@@ -522,7 +513,7 @@ async fn realtime_session<T: Transmit, R: Receive>(
             match update? {
                 Update::Committed(text) => {
                     typed_any |= typist.type_text(text);
-                    if R::ONE_TRANSCRIPT_PER_COMMIT {
+                    if one_transcript_per_commit {
                         return Ok(());
                     }
                 }

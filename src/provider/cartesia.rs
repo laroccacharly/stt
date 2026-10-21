@@ -13,18 +13,13 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest, handshake::client::Request},
 };
 
-use super::{Connection, Receive, Transmit, Update};
+use super::{BoxFuture, Connection, Live, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;
 
 const MODEL: &str = "ink-2";
 const API_VERSION: &str = "2026-03-01";
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-/// Reads `CARTESIA_API_KEY` from the environment or the keyring.
-pub async fn api_key() -> Result<String> {
-    super::api_key(super::Provider::Cartesia).await
-}
 
 pub struct Sender(SplitSink<Socket, Message>);
 pub struct Receiver(SplitStream<Socket>);
@@ -48,6 +43,11 @@ pub async fn connect(api_key: &str) -> Result<Connection<Sender, Receiver>> {
         sender: Sender(halves.0),
         receiver: Receiver(halves.1),
     })
+}
+
+/// `connect` with its types erased, for the provider registry.
+pub fn connect_boxed(api_key: &str) -> BoxFuture<'_, Result<Live>> {
+    Box::pin(async move { connect(api_key).await.map(Live::new) })
 }
 
 impl Transmit for Sender {

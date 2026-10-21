@@ -14,7 +14,7 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest, handshake::client::Request},
 };
 
-use super::{Connection, Receive, Transmit, Update};
+use super::{BoxFuture, Connection, Live, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;
 
 const MODEL: &str = "scribe_v2_realtime";
@@ -24,11 +24,6 @@ const BATCH_MODEL: &str = "scribe_v2";
 const LANGUAGE: &str = "en";
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-/// Reads `ELEVENLABS_API_KEY` from the environment or the keyring.
-pub async fn api_key() -> Result<String> {
-    super::api_key(super::Provider::ElevenLabsRealtime).await
-}
 
 pub struct Sender {
     sink: SplitSink<Socket, Message>,
@@ -59,6 +54,11 @@ pub async fn connect(api_key: &str) -> Result<Connection<Sender, Receiver>> {
         },
         receiver: Receiver(halves.1),
     })
+}
+
+/// `connect` with its types erased, for the provider registry.
+pub fn connect_boxed(api_key: &str) -> BoxFuture<'_, Result<Live>> {
+    Box::pin(async move { connect(api_key).await.map(Live::new) })
 }
 
 #[derive(Deserialize)]
@@ -94,6 +94,11 @@ pub async fn transcribe(api_key: &str, pcm: &[u8]) -> Result<String> {
     let transcription: Transcription =
         serde_json::from_str(&text).context("ElevenLabs sent an unexpected response")?;
     Ok(transcription.text.trim().to_owned())
+}
+
+/// `transcribe` as a boxed future, for the provider registry.
+pub fn transcribe_boxed<'a>(api_key: &'a str, pcm: &'a [u8]) -> BoxFuture<'a, Result<String>> {
+    Box::pin(transcribe(api_key, pcm))
 }
 
 #[derive(Serialize)]

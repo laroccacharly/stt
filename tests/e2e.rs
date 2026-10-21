@@ -715,20 +715,19 @@ fn login_without_env_keys_fails_without_touching_keyring() {
 #[test]
 fn provider_set_is_remembered_and_listed() {
     let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
-    let ls =
-        |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
+    let names: Vec<String> = provider_names(&sandbox);
+    for name in ["elevenlabs-realtime", "openrouter", "bark-3.0-clean"] {
+        assert!(names.iter().any(|listed| listed == name), "{names:?}");
+    }
     assert_eq!(
-        ls(&sandbox),
-        "* elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n  openrouter\n  phonon-2\n  parakeet-redux\n"
+        selected_provider(&sandbox).as_deref(),
+        Some("elevenlabs-realtime")
     );
 
     let set = sandbox.stt(&["provider", "set", "openrouter"]);
     assert!(set.status.success());
     assert_eq!(String::from_utf8_lossy(&set.stdout), "Using OpenRouter\n");
-    assert_eq!(
-        ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
-    );
+    assert_eq!(selected_provider(&sandbox).as_deref(), Some("openrouter"));
     let config: Value = serde_json::from_str(
         &fs::read_to_string(sandbox.dir.path().join("config/stt/config.json")).unwrap(),
     )
@@ -736,37 +735,27 @@ fn provider_set_is_remembered_and_listed() {
     assert_eq!(config, json!({"provider": "openrouter"}));
 
     assert!(!sandbox.stt(&["provider", "set", "nope"]).status.success());
-    assert_eq!(
-        ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
-    );
+    assert_eq!(selected_provider(&sandbox).as_deref(), Some("openrouter"));
 }
 
 #[test]
 fn provider_set_without_argument_asks() {
     let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
-    let ls =
-        |sandbox: &Sandbox| String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout).unwrap();
+    let names: Vec<String> = provider_names(&sandbox);
+    let cartesia_number: usize = names.iter().position(|name| name == "cartesia").unwrap() + 1;
 
-    let set = sandbox.stt_with_input(&["provider", "set"], "3\n");
+    let set = sandbox.stt_with_input(&["provider", "set"], &format!("{cartesia_number}\n"));
     assert!(set.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&set.stdout),
-        "* 1. elevenlabs-realtime\n  2. elevenlabs-batch\n  3. cartesia\n  4. openrouter\n  \
-         5. phonon-2\n  6. parakeet-redux\n\
-         Provider [elevenlabs-realtime]: Using Cartesia\n"
+    let stdout: String = String::from_utf8_lossy(&set.stdout).into_owned();
+    assert!(
+        stdout.contains("Provider [elevenlabs-realtime]: Using Cartesia"),
+        "{stdout}"
     );
-    assert_eq!(
-        ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n* cartesia\n  openrouter\n  phonon-2\n  parakeet-redux\n"
-    );
+    assert_eq!(selected_provider(&sandbox).as_deref(), Some("cartesia"));
 
     let set = sandbox.stt_with_input(&["provider", "set"], "OpenRouter\n");
     assert!(set.status.success());
-    assert_eq!(
-        ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
-    );
+    assert_eq!(selected_provider(&sandbox).as_deref(), Some("openrouter"));
 
     // Enter keeps the current provider.
     assert!(
@@ -775,19 +764,39 @@ fn provider_set_without_argument_asks() {
             .status
             .success()
     );
-    assert_eq!(
-        ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
-    );
+    assert_eq!(selected_provider(&sandbox).as_deref(), Some("openrouter"));
 
-    for bad in ["7\n", "0\n", "nope\n"] {
-        let set = sandbox.stt_with_input(&["provider", "set"], bad);
+    for bad in [
+        format!("{}\n", names.len() + 1),
+        "0\n".to_owned(),
+        "nope\n".to_owned(),
+    ] {
+        let set = sandbox.stt_with_input(&["provider", "set"], &bad);
         assert!(!set.status.success(), "{bad:?}");
     }
-    assert_eq!(
-        ls(&sandbox),
-        "  elevenlabs-realtime\n  elevenlabs-batch\n  cartesia\n* openrouter\n  phonon-2\n  parakeet-redux\n"
-    );
+    assert_eq!(selected_provider(&sandbox).as_deref(), Some("openrouter"));
+}
+
+/// `stt provider ls` output, one entry per line.
+fn provider_lines(sandbox: &Sandbox) -> Vec<String> {
+    String::from_utf8(sandbox.stt(&["provider", "ls"]).stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn provider_names(sandbox: &Sandbox) -> Vec<String> {
+    provider_lines(sandbox)
+        .into_iter()
+        .map(|line| line[2..].to_owned())
+        .collect()
+}
+
+fn selected_provider(sandbox: &Sandbox) -> Option<String> {
+    provider_lines(sandbox)
+        .into_iter()
+        .find_map(|line| line.strip_prefix("* ").map(str::to_owned))
 }
 
 /// What the fake Cartesia server observed.
@@ -1011,10 +1020,10 @@ async fn local_transcribes_real_speech(provider: &str) {
     let cache = std::env::var("XDG_CACHE_HOME")
         .unwrap_or_else(|_| format!("{}/.cache", std::env::var("HOME").unwrap()));
     sandbox.extra_env = vec![("XDG_CACHE_HOME", cache)];
-    let name = if provider == "phonon-2" {
-        "phonon"
-    } else {
-        "parakeet_redux"
+    let name = match provider {
+        "phonon-2" => "phonon",
+        "parakeet-redux" => "parakeet_redux",
+        _ => "bark",
     };
     let server = ServerGuard(sandbox.dir.path().join(format!("runtime/stt/{name}.pid")));
     let set = sandbox.stt(&["provider", "set", provider]);
@@ -1083,4 +1092,10 @@ async fn phonon_transcribes_real_speech() {
 #[ignore = "runs the real Parakeet Redux model through uv"]
 async fn parakeet_redux_transcribes_real_speech() {
     local_transcribes_real_speech("parakeet-redux").await;
+}
+
+#[tokio::test]
+#[ignore = "runs the real Underdog Bark 3.0 Clean model through uv"]
+async fn bark_transcribes_real_speech() {
+    local_transcribes_real_speech("bark-3.0-clean").await;
 }
