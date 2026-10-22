@@ -5,7 +5,11 @@
 //! with `cargo test -- --ignored`.
 
 // tungstenite's handshake callback signature returns a large `Err`.
-#![allow(clippy::result_large_err)]
+#![allow(
+    clippy::result_large_err,
+    clippy::unwrap_used,
+    clippy::missing_assert_message
+)]
 
 use std::{
     collections::HashMap,
@@ -119,7 +123,9 @@ async fn fake_elevenlabs(
                         json!({"message_type": "transcriber_error", "error": "boom"})
                     }
                     Script::NoFinal => continue,
-                    _ => json!({"message_type": "committed_transcript", "text": " goodbye "}),
+                    Script::Dictation | Script::AuthError => {
+                        json!({"message_type": "committed_transcript", "text": " goodbye "})
+                    }
                 };
                 ws.send(send(reply)).await.unwrap();
             }
@@ -960,7 +966,11 @@ async fn fake_cartesia(error: bool) -> (String, JoinHandle<CartesiaSeen>) {
                         .await
                         .unwrap();
                 }
-                _ => {}
+                Message::Text(_)
+                | Message::Ping(_)
+                | Message::Pong(_)
+                | Message::Close(_)
+                | Message::Frame(_) => {}
             }
         }
         seen

@@ -1,6 +1,6 @@
 [package]
 name = "stt"
-version = "0.16.0"
+version = "0.16.1"
 edition = "2024"
 license = "MIT"
 
@@ -41,3 +41,22 @@ syn = { version = "2", features = ["full", "visit"] }
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "time", "process", "sync"] }
 tokio-tungstenite = "0.30.0"
+
+# Mechanical subset of the Google Rust style guide
+# (https://google.github.io/styleguide/rustguide.html). Run `cargo clippy --all-targets`.
+[lints.clippy]
+wildcard_imports = "warn"
+enum_glob_use = "warn"
+unwrap_used = "warn"
+missing_assert_message = "warn"
+wildcard_enum_match_arm = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+implicit_clone = "warn"
+fn_params_excessive_bools = "warn"
+struct_excessive_bools = "warn"
+undocumented_unsafe_blocks = "warn"
+format_push_string = "warn"
+string_add = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"

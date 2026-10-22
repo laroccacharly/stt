@@ -80,7 +80,7 @@ impl Phase {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Event {
     /// Loudness of the latest audio chunk, `0.0..=1.0`.
     Level(f32),
@@ -239,7 +239,9 @@ impl Waveform {
             let goal: f32 = match self.phase {
                 Phase::Listening => self.levels[i],
                 // Gentle ripple while there is no audio to show.
-                _ => 0.08 + 0.06 * (t * 4.0 + i as f32 * 0.35).sin(),
+                Phase::Connecting | Phase::Finishing => {
+                    0.08 + 0.06 * (t * 4.0 + i as f32 * 0.35).sin()
+                }
             };
             let rate: f32 = if goal > *shown { 0.5 } else { 0.15 };
             *shown += (goal - *shown) * ease(rate, frames);
@@ -258,7 +260,9 @@ impl Waveform {
         };
 
         let pill: tiny_skia::Path = capsule(0.5, 0.5, w - 1.0, h - 1.0);
-        paint.set_color(Color::from_rgba(0.07, 0.07, 0.10, 0.9 * alpha).unwrap());
+        paint.set_color(
+            Color::from_rgba(0.07, 0.07, 0.10, 0.9 * alpha).expect("pill color is in range"),
+        );
         pixmap.fill_path(&pill, &paint, FillRule::Winding, transform, None);
 
         let gradient: Gradient = self.phase.gradient();
@@ -275,7 +279,9 @@ impl Waveform {
             let rgb: [f32; 3] = std::array::from_fn(|c| {
                 gradient.start[c] + (gradient.end[c] - gradient.start[c]) * k
             });
-            paint.set_color(Color::from_rgba(rgb[0], rgb[1], rgb[2], alpha).unwrap());
+            paint.set_color(
+                Color::from_rgba(rgb[0], rgb[1], rgb[2], alpha).expect("bar color is in range"),
+            );
             let path: tiny_skia::Path = capsule(x, h / 2.0 - half, bar, half * 2.0);
             pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
         }
@@ -306,7 +312,9 @@ fn capsule(x: f32, y: f32, w: f32, h: f32) -> tiny_skia::Path {
     pb.cubic_to(x, y + r - c, x + r - c, y, x + r, y);
     pb.close();
     pb.finish().unwrap_or_else(|| {
-        PathBuilder::from_rect(Rect::from_xywh(x, y, w.max(1.0), h.max(1.0)).unwrap())
+        PathBuilder::from_rect(
+            Rect::from_xywh(x, y, w.max(1.0), h.max(1.0)).expect("rect is at least 1x1"),
+        )
     })
 }
 

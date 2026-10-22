@@ -160,7 +160,7 @@ impl Receive for Receiver {
             match message {
                 Message::Text(text) => return Some(parse(&text)),
                 Message::Close(_) => return None,
-                _ => {}
+                Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
             }
         }
     }

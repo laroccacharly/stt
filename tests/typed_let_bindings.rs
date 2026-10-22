@@ -1,3 +1,10 @@
+// `syn::Pat` is non-exhaustive with many variants; wildcards are the point here.
+#![allow(
+    clippy::unwrap_used,
+    clippy::missing_assert_message,
+    clippy::wildcard_enum_match_arm
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

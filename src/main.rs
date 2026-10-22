@@ -130,13 +130,13 @@ impl Paths {
 
 fn main() {
     let cli: Cli = Cli::parse();
-    if let Err(error) = run(cli.command.unwrap_or(Cmd::Toggle)) {
+    if let Err(error) = run(&cli.command.unwrap_or(Cmd::Toggle)) {
         let _ = notify("STT error", &format!("{error:#}"), 5000).join();
         std::process::exit(1);
     }
 }
 
-fn run(command: Cmd) -> Result<()> {
+fn run(command: &Cmd) -> Result<()> {
     let paths: Paths = Paths::new();
     fs::create_dir_all(&paths.runtime)?;
     match command {
@@ -164,7 +164,7 @@ fn run(command: Cmd) -> Result<()> {
         }
         Cmd::Provider(ProviderCmd::Set { provider }) => {
             let provider: Provider = match provider {
-                Some(provider) => provider,
+                Some(provider) => *provider,
                 None => choose_provider()?,
             };
             if let Some(model) = provider.local_model() {

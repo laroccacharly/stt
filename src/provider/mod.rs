@@ -222,7 +222,7 @@ impl Provider {
     pub fn local_model(self) -> Option<&'static local::Model> {
         match self.definition().backend {
             Backend::Local(model) => Some(model),
-            _ => None,
+            Backend::Realtime(_) | Backend::Batch { .. } => None,
         }
     }
 
