@@ -129,6 +129,18 @@ async fn fake_elevenlabs(
     (url, server, events_rx)
 }
 
+/// A session saved in the history database.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct Saved {
+    provider: String,
+    model: String,
+    /// Decoded FLAC samples.
+    samples: usize,
+    transcript: String,
+    created_at: String,
+}
+
 /// An isolated environment: private runtime dir and fake tools on `PATH`.
 struct Sandbox {
     dir: TempDir,
@@ -218,6 +230,7 @@ impl Sandbox {
             .env("XDG_RUNTIME_DIR", self.dir.path().join("runtime"))
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("XDG_CACHE_HOME", self.dir.path().join("cache"))
+            .env("XDG_DATA_HOME", self.dir.path().join("data"))
             .env("ELEVENLABS_API_KEY", KEY)
             .env("STT_ELEVENLABS_URL", &self.server_url)
             .env("STT_TYPED", self.typed_path())
@@ -226,6 +239,55 @@ impl Sandbox {
             .env_remove("WAYLAND_DISPLAY")
             .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent");
         command
+    }
+
+    /// Saved sessions, oldest first.
+    fn history(&self) -> Vec<Saved> {
+        let db =
+            rusqlite::Connection::open(self.dir.path().join("data/stt/history.sqlite")).unwrap();
+        db.prepare(
+            "SELECT provider, model, audio, transcript, created_at FROM transcriptions ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            let audio: Vec<u8> = row.get(2)?;
+            let samples = claxon::FlacReader::new(audio.as_slice())
+                .unwrap()
+                .samples()
+                .count();
+            Ok(Saved {
+                provider: row.get(0)?,
+                model: row.get(1)?,
+                samples,
+                transcript: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    /// Asserts exactly one session was saved, with this provider, model and
+    /// transcript, and with the recorded audio.
+    fn assert_saved(&self, provider: &str, model: &str, transcript: &str) {
+        let history = self.history();
+        assert_eq!(history.len(), 1, "{history:?}");
+        let saved = &history[0];
+        assert_eq!(
+            (
+                saved.provider.as_str(),
+                saved.model.as_str(),
+                saved.transcript.as_str()
+            ),
+            (provider, model, transcript)
+        );
+        // The fake microphone sends 1600-sample chunks.
+        assert!(
+            saved.samples >= 1600 && saved.samples.is_multiple_of(1600),
+            "{saved:?}"
+        );
+        assert!(saved.created_at.ends_with('Z'), "{saved:?}");
     }
 
     fn status(&self) -> String {
@@ -277,6 +339,11 @@ async fn toggle_dictates_and_types_transcript() {
         .await;
     assert_eq!(sandbox.status(), "idle");
     assert_eq!(sandbox.typed(), "hello world| goodbye|");
+    sandbox.assert_saved(
+        "elevenlabs-realtime",
+        "scribe_v2_realtime",
+        "hello world goodbye",
+    );
 
     let seen = server.await.unwrap();
     assert_eq!(seen.api_key.as_deref(), Some(KEY));
@@ -538,6 +605,15 @@ async fn openrouter_transcribes_recording_on_stop() {
     let sandbox = openrouter_sandbox(url);
     record_briefly(&sandbox).await;
     assert_eq!(sandbox.typed(), "hello there|", "log:\n{}", sandbox.log());
+    sandbox.assert_saved("openrouter", "microsoft/mai-transcribe-2", "hello there");
+    let listed = String::from_utf8(sandbox.stt(&["history", "ls"]).stdout).unwrap();
+    assert!(
+        listed
+            .trim_end()
+            .ends_with("  openrouter (microsoft/mai-transcribe-2)  hello there"),
+        "{listed}"
+    );
+    assert_eq!(listed.lines().count(), 1, "{listed}");
 
     let request = server.await.unwrap();
     assert_eq!(
@@ -576,6 +652,7 @@ async fn openrouter_failure_falls_back_to_elevenlabs() {
         "log:\n{log}"
     );
     assert!(!log.contains("STT error"), "log:\n{log}");
+    sandbox.assert_saved("elevenlabs-batch", "scribe_v2", "saved by the fallback");
 
     let request = elevenlabs.await.unwrap();
     assert_eq!(request.request_line, "POST /v1/speech-to-text HTTP/1.1");

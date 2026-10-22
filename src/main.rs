@@ -2,6 +2,7 @@
 //! local model.
 
 mod audio;
+mod history;
 mod hyprland;
 mod overlay;
 mod provider;
@@ -27,6 +28,7 @@ use tokio::{
 };
 
 use audio::Microphone;
+use history::History;
 use overlay::{Event, Overlay, Phase};
 use provider::{Backend, Live, Provider, ReceiveDyn, TransmitDyn, Update, elevenlabs, local};
 
@@ -61,6 +63,9 @@ enum Cmd {
     /// List or choose the transcription provider.
     #[command(subcommand)]
     Provider(ProviderCmd),
+    /// Browse saved dictations.
+    #[command(subcommand)]
+    History(HistoryCmd),
     /// Bind End to `stt toggle` in Hyprland.
     Install,
     /// Remove the End binding.
@@ -80,6 +85,15 @@ enum ProviderCmd {
         provider: Option<Provider>,
     },
 }
+
+#[derive(Subcommand)]
+enum HistoryCmd {
+    /// List the 10 most recent dictations, newest first.
+    Ls,
+}
+
+/// How many dictations `stt history ls` lists.
+const HISTORY_LS_LIMIT: usize = 10;
 
 struct Paths {
     runtime: PathBuf,
@@ -159,6 +173,20 @@ fn run(command: Cmd) -> Result<()> {
             provider.save()?;
             local::stop_others(&paths.runtime, provider.local_model())?;
             println!("Using {}", provider.label());
+            Ok(())
+        }
+        Cmd::History(HistoryCmd::Ls) => {
+            for entry in History::open_default()?.recent(HISTORY_LS_LIMIT)? {
+                let transcript: &str = if entry.transcript.is_empty() {
+                    "(no speech)"
+                } else {
+                    &entry.transcript
+                };
+                println!(
+                    "{}  {} ({})  {transcript}",
+                    entry.time, entry.provider, entry.model
+                );
+            }
             Ok(())
         }
         Cmd::Install => hyprland::install(),
@@ -315,12 +343,18 @@ async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
         } => {
             let key: String = provider::api_key(provider).await?;
             let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
+            // The provider that actually transcribed, for the history.
+            let mut used: Provider = provider;
             let text: String = match transcribe(&key, &recording).await {
                 Ok(text) => text,
-                Err(error) if fallback => elevenlabs_fallback(&recording, error).await?,
+                Err(error) if fallback => {
+                    used = Provider::ElevenLabsBatch;
+                    elevenlabs_fallback(&recording, error).await?
+                }
                 Err(error) => return Err(error),
             };
-            type_transcript(text).await;
+            type_transcript(text.clone()).await;
+            remember(used, &recording, &text).await;
             Ok(())
         }
         Backend::Local(model) => {
@@ -328,7 +362,9 @@ async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
             // Lazily, so a first start loads the model while you speak.
             server.ensure_running()?;
             let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
-            type_transcript(server.transcribe(&recording).await?).await;
+            let text: String = server.transcribe(&recording).await?;
+            type_transcript(text.clone()).await;
+            remember(provider, &recording, &text).await;
             Ok(())
         }
     }
@@ -384,6 +420,18 @@ async fn record_until_stopped(overlay: &Overlay, stop: &mut StopSignals) -> Resu
     overlay.send(Event::Phase(Phase::Finishing));
     mic.stop().await;
     Ok(recording)
+}
+
+/// Saves the session to the history; a failure is reported but doesn't fail
+/// the dictation, which has already been inserted.
+async fn remember(provider: Provider, recording: &[u8], transcript: &str) {
+    let saved: Result<()> =
+        History::open_default().and_then(|history| history.save(provider, recording, transcript));
+    if let Err(error) = saved {
+        let handle: thread::JoinHandle<()> =
+            notify("STT history failed", &format!("{error:#}"), 4000);
+        let _ = tokio::task::spawn_blocking(move || handle.join()).await;
+    }
 }
 
 /// Inserts a batch transcript into the focused window.
@@ -485,6 +533,7 @@ async fn realtime_session(
 
     let mut typist: Typist = Typist::spawn();
     let mut typed_any: bool = false;
+    let mut recording: Vec<u8> = Vec::new();
 
     loop {
         tokio::select! {
@@ -493,6 +542,7 @@ async fn realtime_session(
                 Some(chunk) => {
                     overlay.send(Event::Level(audio::level(&chunk)));
                     tx.send_audio(&chunk).await?;
+                    recording.extend_from_slice(&chunk);
                 }
                 None => bail!("Microphone stopped unexpectedly (pw-record exited)"),
             },
@@ -532,8 +582,9 @@ async fn realtime_session(
         ))
     });
     tx.close().await;
-    typist.finish().await;
-    // Typed what we could; now report the failure.
+    let transcript: String = typist.finish().await;
+    // Typed and saved what we could; now report the failure.
+    remember(provider, &recording, &transcript).await;
     finished?;
     if ENABLE_STATUS_NOTIFICATIONS {
         notify(
@@ -555,8 +606,8 @@ async fn realtime_session(
 struct Typist {
     queue: mpsc::UnboundedSender<String>,
     worker: tokio::task::JoinHandle<()>,
-    /// Whether anything has been queued yet: the first text gets no leading space.
-    started: bool,
+    /// Everything queued so far, as typed.
+    transcript: String,
 }
 
 impl Typist {
@@ -576,7 +627,7 @@ impl Typist {
         Self {
             queue: channel.0,
             worker,
-            started: false,
+            transcript: String::new(),
         }
     }
 
@@ -586,7 +637,7 @@ impl Typist {
         if text.is_empty() {
             return false;
         }
-        self.push(if self.started {
+        self.push(if self.started() {
             format!(" {text}")
         } else {
             text
@@ -596,7 +647,7 @@ impl Typist {
     /// Queues a delta that carries its own spacing; returns whether there was
     /// anything to type.
     fn type_delta(&mut self, text: &str) -> bool {
-        let text: &str = if self.started {
+        let text: &str = if self.started() {
             text
         } else {
             text.trim_start()
@@ -604,15 +655,22 @@ impl Typist {
         !text.is_empty() && self.push(text.to_owned())
     }
 
+    /// Whether anything has been queued yet: the first text gets no leading space.
+    fn started(&self) -> bool {
+        !self.transcript.is_empty()
+    }
+
     fn push(&mut self, text: String) -> bool {
-        self.started = true;
+        self.transcript.push_str(&text);
         let _ = self.queue.send(text);
         true
     }
 
-    async fn finish(self) {
+    /// Waits for everything to be typed; returns the whole transcript.
+    async fn finish(self) -> String {
         drop(self.queue);
         let _ = self.worker.await;
+        self.transcript
     }
 }
 

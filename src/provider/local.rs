@@ -127,7 +127,13 @@ pub fn stop_others(runtime: &Path, keep: Option<&Model>) -> Result<()> {
     for entry in fs::read_dir(runtime)? {
         let pid_file: PathBuf = entry?.path();
         let name: &str = match pid_file.file_stem().and_then(|stem| stem.to_str()) {
-            Some(name) if pid_file.extension().is_some_and(|extension| extension == "pid") => name,
+            Some(name)
+                if pid_file
+                    .extension()
+                    .is_some_and(|extension| extension == "pid") =>
+            {
+                name
+            }
             _ => continue,
         };
         if keep.is_some_and(|model| model.name == name) {

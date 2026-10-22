@@ -39,12 +39,14 @@ pub struct Definition {
     pub aliases: &'static [&'static str],
     pub label: &'static str,
     pub company: &'static str,
+    /// The model that transcribes, as the provider names it.
+    pub model: &'static str,
     pub key: Option<&'static str>,
     pub backend: Backend,
 }
 
 /// Declares the provider list once: the enum, `ALL`, and the metadata behind
-/// `name`, `label`, `company`, `key_name` and `backend` are all generated.
+/// `name`, `label`, `company`, `model`, `key_name` and `backend` are all generated.
 macro_rules! providers {
     ($(
         $(#[$meta:meta])*
@@ -53,6 +55,7 @@ macro_rules! providers {
             aliases: $aliases:expr,
             label: $label:literal,
             company: $company:literal,
+            model: $model:expr,
             key: $key:expr,
             backend: $backend:expr $(,)?
         }
@@ -73,6 +76,7 @@ macro_rules! providers {
                         aliases: $aliases,
                         label: $label,
                         company: $company,
+                        model: $model,
                         key: $key,
                         backend: $backend,
                     }),*
@@ -91,6 +95,7 @@ providers! {
         aliases: &["elevenlabs"],
         label: "ElevenLabs realtime",
         company: "ElevenLabs",
+        model: elevenlabs::MODEL,
         key: Some("ELEVENLABS_API_KEY"),
         backend: Backend::Realtime(elevenlabs::connect_boxed),
     },
@@ -100,6 +105,7 @@ providers! {
         aliases: &[],
         label: "ElevenLabs batch",
         company: "ElevenLabs",
+        model: elevenlabs::BATCH_MODEL,
         key: Some("ELEVENLABS_API_KEY"),
         backend: Backend::Batch {
             transcribe: elevenlabs::transcribe_boxed,
@@ -112,6 +118,7 @@ providers! {
         aliases: &[],
         label: "Cartesia",
         company: "Cartesia",
+        model: cartesia::MODEL,
         key: Some("CARTESIA_API_KEY"),
         backend: Backend::Realtime(cartesia::connect_boxed),
     },
@@ -122,6 +129,7 @@ providers! {
         aliases: &[],
         label: "OpenRouter",
         company: "OpenRouter",
+        model: openrouter::MODEL,
         key: Some("OPENROUTER_API_KEY"),
         backend: Backend::Batch {
             transcribe: openrouter::transcribe_boxed,
@@ -134,6 +142,7 @@ providers! {
         aliases: &[],
         label: "Phonon-2 (local)",
         company: "Fermion Research",
+        model: "phonon-2",
         key: None,
         backend: Backend::Local(&local::Model {
             name: "phonon",
@@ -146,6 +155,7 @@ providers! {
         aliases: &[],
         label: "Parakeet Redux (local)",
         company: "Moondream",
+        model: "moondream/parakeet-redux",
         key: None,
         backend: Backend::Local(&local::Model {
             name: "parakeet_redux",
@@ -159,6 +169,7 @@ providers! {
         aliases: &[],
         label: "Underdog Bark 3.0 Clean (local)",
         company: "Conway Research",
+        model: "ConwayResearch/Underdog-Bark-3.0-Clean",
         key: None,
         backend: Backend::Local(&local::Model {
             name: "bark",
@@ -172,6 +183,7 @@ providers! {
         aliases: &[],
         label: "Underdog Bark 3.0 Clean (local GPU, ONNX)",
         company: "Conway Research",
+        model: "ConwayResearch/Underdog-Bark-3.0-Clean",
         key: None,
         backend: Backend::Local(&local::Model {
             name: "onnxbark",
@@ -236,6 +248,11 @@ impl Provider {
 
     pub fn label(self) -> &'static str {
         self.definition().label
+    }
+
+    /// The model that transcribes, as the provider names it.
+    pub fn model(self) -> &'static str {
+        self.definition().model
     }
 }
 

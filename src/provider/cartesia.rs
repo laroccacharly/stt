@@ -16,7 +16,7 @@ use tokio_tungstenite::{
 use super::{BoxFuture, Connection, Live, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;
 
-const MODEL: &str = "ink-2";
+pub const MODEL: &str = "ink-2";
 const API_VERSION: &str = "2026-03-01";
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;

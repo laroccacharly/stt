@@ -17,9 +17,9 @@ use tokio_tungstenite::{
 use super::{BoxFuture, Connection, Live, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;
 
-const MODEL: &str = "scribe_v2_realtime";
+pub const MODEL: &str = "scribe_v2_realtime";
 /// Model for whole recordings.
-const BATCH_MODEL: &str = "scribe_v2";
+pub const BATCH_MODEL: &str = "scribe_v2";
 /// Transcription language, fixed instead of auto-detected.
 const LANGUAGE: &str = "en";
 

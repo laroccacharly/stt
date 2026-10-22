@@ -1,6 +1,6 @@
 [package]
 name = "stt"
-version = "0.14.0"
+version = "0.16.0"
 edition = "2024"
 license = "MIT"
 
@@ -8,10 +8,12 @@ license = "MIT"
 anyhow = "1.0.104"
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
+flacenc = "0.5.1"
 futures-util = "0.3.34"
 json-store = { git = "https://github.com/laroccacharly/json-store" }
 notify-rust = "4.18.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "multipart", "rustls-no-provider"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustix = { version = "1.1.5", features = ["process"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 secret-service = { version = "5.2.0", features = ["rt-tokio-crypto-rust"] }
@@ -30,8 +32,10 @@ incremental = true
 lto = "off"
 
 [dev-dependencies]
+claxon = "0.4.3"
 futures-util = "0.3.34"
 proc-macro2 = { version = "1", features = ["span-locations"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde_json = "1.0.151"
 syn = { version = "2", features = ["full", "visit"] }
 tempfile = "3.27.0"

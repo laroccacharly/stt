@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::{audio::SAMPLE_RATE, provider::BoxFuture};
 
-const MODEL: &str = "microsoft/mai-transcribe-2";
+pub const MODEL: &str = "microsoft/mai-transcribe-2";
 
 #[derive(Deserialize)]
 struct Transcription {
