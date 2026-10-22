@@ -157,6 +157,7 @@ fn run(command: Cmd) -> Result<()> {
                 local::prepare(model)?;
             }
             provider.save()?;
+            local::stop_others(&paths.runtime, provider.local_model())?;
             println!("Using {}", provider.label());
             Ok(())
         }

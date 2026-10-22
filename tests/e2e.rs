@@ -739,6 +739,35 @@ fn provider_set_is_remembered_and_listed() {
 }
 
 #[test]
+fn provider_set_stops_local_model_servers() {
+    let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
+    let runtime = sandbox.dir.path().join("runtime/stt");
+    fs::create_dir_all(&runtime).unwrap();
+    // A fake server, in its own process group like a real one, with a worker.
+    let spawn = |args: &[&Path]| {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 60 & wait"]).args(args);
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        command.spawn().unwrap()
+    };
+    let socket = runtime.join("tinybark_server.sock");
+    fs::write(&socket, "").unwrap();
+    let mut server = spawn(&[&socket]);
+    fs::write(runtime.join("tinybark_server.pid"), server.id().to_string()).unwrap();
+    // A PID file whose process serves no socket: left alone.
+    let mut stranger = spawn(&[]);
+    fs::write(runtime.join("phonon.pid"), stranger.id().to_string()).unwrap();
+
+    let set = sandbox.stt(&["provider", "set", "openrouter"]);
+    assert!(set.status.success());
+    assert!(server.wait().is_ok());
+    assert!(!runtime.join("tinybark_server.pid").exists());
+    assert!(!socket.exists());
+    assert!(stranger.try_wait().unwrap().is_none());
+    let _ = stranger.kill();
+}
+
+#[test]
 fn provider_set_without_argument_asks() {
     let sandbox = Sandbox::new("ws://127.0.0.1:9".into());
     let names: Vec<String> = provider_names(&sandbox);

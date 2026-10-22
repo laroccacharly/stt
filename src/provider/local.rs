@@ -1,7 +1,7 @@
 //! Local models (Phonon-2, Parakeet Redux, Bark 3.0 Clean, onnxbark), each
 //! served by a long-lived Python process run through `uv`. The server is
 //! started on first use and stays up, so the model loads once; it loads while
-//! the first recording is made.
+//! the first recording is made. Switching provider stops the other servers.
 
 use std::{
     fs::{self, File},
@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use rustix::process::{Pid, Signal, kill_process_group};
 use serde::Deserialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -118,6 +119,47 @@ impl Server {
             .unwrap_or("");
         format!("{last} (log: {})", self.log.display())
     }
+}
+
+/// Stops every model server in `runtime` except `keep`'s, including servers of
+/// models no longer in the registry, so only one model holds memory.
+pub fn stop_others(runtime: &Path, keep: Option<&Model>) -> Result<()> {
+    for entry in fs::read_dir(runtime)? {
+        let pid_file: PathBuf = entry?.path();
+        let name: &str = match pid_file.file_stem().and_then(|stem| stem.to_str()) {
+            Some(name) if pid_file.extension().is_some_and(|extension| extension == "pid") => name,
+            _ => continue,
+        };
+        if keep.is_some_and(|model| model.name == name) {
+            continue;
+        }
+        let socket: PathBuf = pid_file.with_extension("sock");
+        if let Some(pid) = server_pid(&pid_file, &socket) {
+            // The server leads its own process group: `uv`, Python and any workers.
+            let _ = kill_process_group(pid, Signal::TERM);
+            let _ = fs::remove_file(&pid_file);
+            let _ = fs::remove_file(&socket);
+            eprintln!("stopped the {name} server");
+        }
+    }
+    Ok(())
+}
+
+/// The PID in `pid_file` if that process serves `socket`: not the recorder, nor
+/// whatever reused the PID of a server that died.
+fn server_pid(pid_file: &Path, socket: &Path) -> Option<Pid> {
+    fs::read_to_string(pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse::<i32>().ok())
+        .filter(|pid| serves(*pid, socket))
+        .and_then(Pid::from_raw)
+}
+
+/// Whether process `pid` was started to serve `socket`.
+fn serves(pid: i32, socket: &Path) -> bool {
+    let socket: &[u8] = socket.as_os_str().as_encoded_bytes();
+    fs::read(format!("/proc/{pid}/cmdline"))
+        .is_ok_and(|cmdline| cmdline.split(|&b| b == 0).any(|arg| arg == socket))
 }
 
 /// Installs the model's dependencies and downloads it, showing progress.
