@@ -998,11 +998,13 @@ impl Drop for ServerGuard {
     }
 }
 
-/// Lowercase words only, for comparing transcripts.
+/// Lowercase words only, for comparing transcripts. "Mr." counts as "mister":
+/// Bark abbreviates it.
 fn words(text: &str) -> String {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric() && c != '\'')
         .filter(|word| !word.is_empty())
+        .map(|word| if word == "mr" { "mister" } else { word })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -1023,6 +1025,7 @@ async fn local_transcribes_real_speech(provider: &str) {
     let name = match provider {
         "phonon-2" => "phonon",
         "parakeet-redux" => "parakeet_redux",
+        "onnxbark" => "onnxbark",
         _ => "bark",
     };
     let server = ServerGuard(sandbox.dir.path().join(format!("runtime/stt/{name}.pid")));
@@ -1098,4 +1101,10 @@ async fn parakeet_redux_transcribes_real_speech() {
 #[ignore = "runs the real Underdog Bark 3.0 Clean model through uv"]
 async fn bark_transcribes_real_speech() {
     local_transcribes_real_speech("bark-3.0-clean").await;
+}
+
+#[tokio::test]
+#[ignore = "runs the real Underdog Bark 3.0 Clean model through tinybark's ONNX backend"]
+async fn onnxbark_transcribes_real_speech() {
+    local_transcribes_real_speech("onnxbark").await;
 }
