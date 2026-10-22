@@ -166,7 +166,7 @@ providers! {
         }),
     },
     /// Local: Underdog Bark 3.0 Clean on this machine's GPU through tinybark's
-    /// ONNX Runtime backend, from the tinybark checkout next to stt's.
+    /// ONNX Runtime backend, pulled from GitHub.
     OnnxBark {
         name: "onnxbark",
         aliases: &[],

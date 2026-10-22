@@ -3,7 +3,7 @@
 # dependencies = ["tinybark[export]"]
 #
 # [tool.uv.sources]
-# tinybark = { path = "$STT_DIR/../tinybark", editable = true }
+# tinybark = { git = "https://github.com/laroccacharly/tinybark.git" }
 # torch = { index = "pytorch-cpu" }
 #
 # [[tool.uv.index]]
