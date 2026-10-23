@@ -1,6 +1,6 @@
 [package]
 name = "stt"
-version = "0.16.2"
+version = "0.17.2"
 edition = "2024"
 license = "MIT"
 

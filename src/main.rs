@@ -13,7 +13,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Output, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
@@ -341,6 +341,8 @@ async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
             let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
             // The provider that actually transcribed, for the history.
             let mut used: Provider = provider;
+            // Includes a failed attempt before the fallback: the time you waited.
+            let started: Instant = Instant::now();
             let text: String = match transcribe(&key, &recording).await {
                 Ok(text) => text,
                 Err(error) if fallback => {
@@ -349,8 +351,9 @@ async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
                 }
                 Err(error) => return Err(error),
             };
+            let elapsed: Duration = started.elapsed();
             type_transcript(text.clone()).await;
-            remember(used, &recording, &text).await;
+            remember(used, &recording, &text, elapsed).await;
             Ok(())
         }
         Backend::Local(model) => {
@@ -358,9 +361,11 @@ async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
             // Lazily, so a first start loads the model while you speak.
             server.ensure_running()?;
             let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
+            let started: Instant = Instant::now();
             let text: String = server.transcribe(&recording).await?;
+            let elapsed: Duration = started.elapsed();
             type_transcript(text.clone()).await;
-            remember(provider, &recording, &text).await;
+            remember(provider, &recording, &text, elapsed).await;
             Ok(())
         }
     }
@@ -420,9 +425,14 @@ async fn record_until_stopped(overlay: &Overlay, stop: &mut StopSignals) -> Resu
 
 /// Saves the session to the history; a failure is reported but doesn't fail
 /// the dictation, which has already been inserted.
-async fn remember(provider: Provider, recording: &[u8], transcript: &str) {
-    let saved: Result<()> =
-        History::open_default().and_then(|history| history.save(provider, recording, transcript));
+async fn remember(
+    provider: Provider,
+    recording: &[u8],
+    transcript: &str,
+    transcription_time: Duration,
+) {
+    let saved: Result<()> = History::open_default()
+        .and_then(|history| history.save(provider, recording, transcript, transcription_time));
     if let Err(error) = saved {
         let handle: thread::JoinHandle<()> =
             notify("STT history failed", &format!("{error:#}"), 4000);
@@ -580,7 +590,7 @@ async fn realtime_session(
     tx.close().await;
     let transcript: String = typist.finish().await;
     // Typed and saved what we could; now report the failure.
-    remember(provider, &recording, &transcript).await;
+    remember(provider, &recording, &transcript, Duration::ZERO).await;
     finished?;
     if ENABLE_STATUS_NOTIFICATIONS {
         notify(

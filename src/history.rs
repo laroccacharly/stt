@@ -1,28 +1,27 @@
 //! Dictation history: every recording, FLAC-compressed, with its transcript,
-//! the provider and model that produced it, and when.
+//! the provider and model that produced it, how long transcribing took, and
+//! when.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
 use flacenc::error::Verify;
 use flacenc::source::MemSource;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 
 use crate::audio::SAMPLE_RATE;
 use crate::provider::Provider;
 
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS transcriptions (
-    id INTEGER PRIMARY KEY,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    provider TEXT NOT NULL,
-    model TEXT NOT NULL,
-    audio BLOB NOT NULL,
-    transcript TEXT NOT NULL
-)";
+/// Schema migrations, oldest first, embedded from `migrations/`. A database's
+/// `user_version` is how many of them it has applied, so only append here.
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_create_transcriptions.sql"),
+    include_str!("../migrations/0002_add_transcription_ms.sql"),
+];
 
 pub struct History(Connection);
 
@@ -51,17 +50,34 @@ impl History {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        let connection: Connection =
+        let mut connection: Connection =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        connection.execute_batch(SCHEMA)?;
+        migrate(&mut connection).with_context(|| format!("migrating {}", path.display()))?;
         Ok(Self(connection))
     }
 
-    /// Saves a recording of 16-bit mono PCM at `SAMPLE_RATE` and its transcript.
-    pub fn save(&self, provider: Provider, pcm: &[u8], transcript: &str) -> Result<()> {
+    /// Saves a recording of 16-bit mono PCM at `SAMPLE_RATE`, its transcript and
+    /// how long transcribing it took after recording stopped (zero for realtime
+    /// providers, which transcribe while you speak).
+    pub fn save(
+        &self,
+        provider: Provider,
+        pcm: &[u8],
+        transcript: &str,
+        transcription_time: Duration,
+    ) -> Result<()> {
+        let transcription_ms: i64 =
+            i64::try_from(transcription_time.as_millis()).unwrap_or(i64::MAX);
         self.0.execute(
-            "INSERT INTO transcriptions (provider, model, audio, transcript) VALUES (?1, ?2, ?3, ?4)",
-            (provider.name(), provider.model(), flac(pcm)?, transcript),
+            "INSERT INTO transcriptions (provider, model, audio, transcript, transcription_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                provider.name(),
+                provider.model(),
+                flac(pcm)?,
+                transcript,
+                transcription_ms,
+            ),
         )?;
         Ok(())
     }
@@ -84,6 +100,25 @@ impl History {
             .collect::<rusqlite::Result<_>>()?;
         Ok(entries)
     }
+}
+
+/// Applies the migrations `connection` hasn't yet, each in its own transaction
+/// with the `user_version` bump, so a failure leaves the database at the last
+/// good version.
+fn migrate(connection: &mut Connection) -> Result<()> {
+    let applied: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    for (version, sql) in (1_i64..).zip(MIGRATIONS) {
+        if version <= applied {
+            continue;
+        }
+        let transaction: Transaction<'_> = connection.transaction()?;
+        transaction
+            .execute_batch(sql)
+            .with_context(|| format!("migration {version}"))?;
+        transaction.pragma_update(None, "user_version", version)?;
+        transaction.commit()?;
+    }
+    Ok(())
 }
 
 /// Losslessly compresses 16-bit mono PCM at `SAMPLE_RATE` to FLAC.
@@ -125,25 +160,38 @@ mod tests {
 
         let history: History = History::open(&path).unwrap();
         history
-            .save(Provider::Cartesia, &pcm, "hello world")
+            .save(Provider::Cartesia, &pcm, "hello world", Duration::ZERO)
             .unwrap();
-        history.save(Provider::OpenRouter, &[], "").unwrap();
+        history
+            .save(Provider::OpenRouter, &[], "", Duration::from_millis(1234))
+            .unwrap();
         drop(history);
 
         let db: Connection = Connection::open(&path).unwrap();
-        let rows: Vec<(String, String, Vec<u8>, String, String)> = db
-            .prepare("SELECT provider, model, audio, transcript, created_at FROM transcriptions ORDER BY id")
+        let rows: Vec<(String, String, Vec<u8>, String, String, i64)> = db
+            .prepare(
+                "SELECT provider, model, audio, transcript, created_at, transcription_ms
+                 FROM transcriptions ORDER BY id",
+            )
             .unwrap()
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
             })
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(rows.len(), 2);
 
-        let first: &(String, String, Vec<u8>, String, String) = &rows[0];
+        let first: &(String, String, Vec<u8>, String, String, i64) = &rows[0];
         assert_eq!(first.0, "cartesia");
+        assert_eq!(first.5, 0);
         assert_eq!(first.1, "ink-2");
         assert_eq!(first.3, "hello world");
         assert!(
@@ -159,8 +207,9 @@ mod tests {
         let decoded: Vec<i16> = reader.samples().map(|s| s.unwrap() as i16).collect();
         assert_eq!(decoded, samples);
 
-        let second: &(String, String, Vec<u8>, String, String) = &rows[1];
+        let second: &(String, String, Vec<u8>, String, String, i64) = &rows[1];
         assert_eq!(second.0, "openrouter");
+        assert_eq!(second.5, 1234);
         assert_eq!(second.1, "microsoft/mai-transcribe-2");
         assert_eq!(second.3, "");
     }
@@ -170,7 +219,9 @@ mod tests {
         let dir: tempfile::TempDir = tempfile::tempdir().unwrap();
         let history: History = History::open(&dir.path().join("history.sqlite")).unwrap();
         for text in ["one", "two", "three"] {
-            history.save(Provider::Cartesia, &[0; 320], text).unwrap();
+            history
+                .save(Provider::Cartesia, &[0; 320], text, Duration::ZERO)
+                .unwrap();
         }
         let recent: Vec<Entry> = history.recent(2).unwrap();
         let texts: Vec<&str> = recent
