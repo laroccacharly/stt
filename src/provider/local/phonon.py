@@ -1,6 +1,6 @@
 # /// script
 # requires-python = "==3.12.*"
-# dependencies = ["fermion-research==0.2.11", "torch"]
+# dependencies = ["fermion-research==0.2.14", "torch"]
 #
 # [tool.uv.sources]
 # torch = { index = "pytorch-cpu" }
@@ -10,7 +10,7 @@
 # url = "https://download.pytorch.org/whl/cpu"
 # explicit = true
 # ///
-"""Phonon-2 server for stt (see serve.py). `--prepare` only downloads the
+"""Phonon-2.5 English server for stt (see serve.py). `--prepare` only downloads the
 model and its dependencies."""
 
 import sys
@@ -18,7 +18,7 @@ import sys
 import fermion
 import numpy as np
 
-speech = fermion.load_speech("phonon-2")
+speech = fermion.load_speech("phonon-2.5-en")
 if "--prepare" in sys.argv:
     sys.exit()
 

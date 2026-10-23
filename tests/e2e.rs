@@ -1131,7 +1131,7 @@ async fn local_transcribes_real_speech(provider: &str) {
         .unwrap_or_else(|_| format!("{}/.cache", std::env::var("HOME").unwrap()));
     sandbox.extra_env = vec![("XDG_CACHE_HOME", cache)];
     let name = match provider {
-        "phonon-2" => "phonon",
+        "phonon-2.5-en" => "phonon",
         "parakeet-redux" => "parakeet_redux",
         "onnxbark" => "onnxbark",
         _ => "bark",
@@ -1194,9 +1194,9 @@ async fn local_transcribes_real_speech(provider: &str) {
 }
 
 #[tokio::test]
-#[ignore = "runs the real Phonon-2 model through uv"]
+#[ignore = "runs the real Phonon-2.5 English model through uv"]
 async fn phonon_transcribes_real_speech() {
-    local_transcribes_real_speech("phonon-2").await;
+    local_transcribes_real_speech("phonon-2.5-en").await;
 }
 
 #[tokio::test]

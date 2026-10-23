@@ -1,4 +1,4 @@
-//! Local models (Phonon-2, Parakeet Redux, Bark 3.0 Clean, onnxbark), each
+//! Local models (Phonon-2.5 English, Parakeet Redux, Bark 3.0 Clean, onnxbark), each
 //! served by a long-lived Python process run through `uv`. The server is
 //! started on first use and stays up, so the model loads once; it loads while
 //! the first recording is made. Switching provider stops the other servers.

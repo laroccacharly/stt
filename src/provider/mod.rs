@@ -140,13 +140,14 @@ providers! {
             fallback: true,
         },
     },
-    /// Local: Phonon-2 on this machine's CPU, English only.
-    Phonon2 {
-        name: "phonon-2",
-        aliases: &[],
-        label: "Phonon-2 (local)",
+    /// Local: Phonon-2.5 English on this machine's CPU. Replaces Phonon-2,
+    /// whose name is kept as an alias for saved settings.
+    Phonon25En {
+        name: "phonon-2.5-en",
+        aliases: &["phonon-2", "phonon-2.5"],
+        label: "Phonon-2.5 English (local)",
         company: "Fermion Research",
-        model: "phonon-2",
+        model: "FermionResearch/Phonon-2.5-English",
         key: None,
         backend: Backend::Local(&local::Model {
             name: "phonon",
