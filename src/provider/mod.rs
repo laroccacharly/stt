@@ -5,10 +5,14 @@ pub mod elevenlabs;
 pub mod local;
 pub mod openrouter;
 
-use std::{collections::HashMap, future::Future, path::PathBuf, pin::Pin};
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
 
 use anyhow::{Context, Result, bail};
-use clap::{ValueEnum, builder::PossibleValue};
+use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use secret_service::{Collection, EncryptionType, Item, SearchItemsResult, SecretService};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 

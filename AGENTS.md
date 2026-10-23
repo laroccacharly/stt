@@ -16,6 +16,7 @@ The Hyprland binding runs `~/.cargo/bin/stt`, so an unreinstalled change isn't l
 
 Follow the Google Rust style guide, saved in `docs/rust-style-guide.md`. The
 mechanical parts are enforced by the `[lints.clippy]` table in `Cargo.toml`
-(plus `clippy.toml`); the rest (naming, module layout, iterator chains vs.
+(plus `clippy.toml`) and by `tests/style.rs` (typed `let` bindings, one module
+per `use`); the rest (naming, module layout, iterator chains vs.
 loops, generics vs. `dyn`) is on you when writing code. Don't silence a lint
 with `#[allow]` without a comment saying why.

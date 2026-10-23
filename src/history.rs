@@ -1,16 +1,18 @@
 //! Dictation history: every recording, FLAC-compressed, with its transcript,
 //! the provider and model that produced it, and when.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use flacenc::{bitsink::ByteSink, component::BitRepr, error::Verify, source::MemSource};
+use flacenc::bitsink::ByteSink;
+use flacenc::component::BitRepr;
+use flacenc::error::Verify;
+use flacenc::source::MemSource;
 use rusqlite::Connection;
 
-use crate::{audio::SAMPLE_RATE, provider::Provider};
+use crate::audio::SAMPLE_RATE;
+use crate::provider::Provider;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS transcriptions (

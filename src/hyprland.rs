@@ -1,6 +1,8 @@
 //! Installs the End key binding into the Hyprland config.
 
-use std::{fs, path::PathBuf, process::Command};
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 

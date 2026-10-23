@@ -3,10 +3,8 @@
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
-use tokio::{
-    io::AsyncReadExt,
-    process::{Child, ChildStdout, Command},
-};
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, ChildStdout, Command};
 
 pub const SAMPLE_RATE: u32 = 16_000;
 /// 100 ms of 16-bit mono audio.

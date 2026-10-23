@@ -3,43 +3,30 @@
 //! The overlay runs its own Wayland event loop on a dedicated thread and is
 //! driven by [`Event`]s sent through the returned [`Overlay`] handle.
 
-use std::{
-    f32::consts::PI,
-    thread::{self, JoinHandle},
-    time::Instant,
-};
+use std::f32::consts::PI;
+use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
-use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
-    delegate_dispatch2, delegate_registry,
-    output::{OutputHandler, OutputState},
-    reexports::{
-        calloop::{
-            EventLoop,
-            channel::{self, Channel, Sender},
-        },
-        calloop_wayland_source::WaylandSource,
-        client::{
-            Connection, EventQueue, QueueHandle,
-            globals::{GlobalList, registry_queue_init},
-            protocol::{wl_output, wl_shm, wl_surface},
-        },
-    },
-    registry::{ProvidesRegistryState, RegistryState},
-    registry_handlers,
-    shell::{
-        WaylandSurface,
-        wlr_layer::{
-            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-            LayerSurfaceConfigure,
-        },
-    },
-    shm::{
-        Shm, ShmHandler,
-        slot::{Buffer, SlotPool},
-    },
+use smithay_client_toolkit::compositor::{
+    CompositorHandler, CompositorState, FrameCallbackData, Region,
 };
+use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::calloop::EventLoop;
+use smithay_client_toolkit::reexports::calloop::channel::{self, Channel, Sender};
+use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
+use smithay_client_toolkit::reexports::client::globals::{GlobalList, registry_queue_init};
+use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_shm, wl_surface};
+use smithay_client_toolkit::reexports::client::{Connection, EventQueue, QueueHandle};
+use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::{
+    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+    LayerSurfaceConfigure,
+};
+use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
+use smithay_client_toolkit::shm::{Shm, ShmHandler};
+use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, PixmapMut, Rect, Transform};
 
 const BARS: usize = 48;

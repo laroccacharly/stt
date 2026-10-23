@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Local, Pat};
+use syn::{ItemUse, Local, Pat, UseTree};
 
 struct Violation {
     line: usize,
@@ -39,6 +39,32 @@ impl<'ast> Visit<'ast> for LetVisitor {
             self.violations.push(Violation { line, problem });
         }
         visit::visit_local(self, node);
+    }
+}
+
+/// Finds `use` groups that reach into a submodule, like `use a::{b, c::D}`:
+/// each `use` imports from one module (rustfmt's `imports_granularity = Module`).
+#[derive(Default)]
+struct UseVisitor {
+    lines: Vec<usize>,
+}
+
+impl<'ast> Visit<'ast> for UseVisitor {
+    fn visit_item_use(&mut self, node: &'ast ItemUse) {
+        if has_nested_group_path(&node.tree, false) {
+            self.lines.push(node.span().start().line);
+        }
+    }
+}
+
+fn has_nested_group_path(tree: &UseTree, in_group: bool) -> bool {
+    match tree {
+        UseTree::Path(path) => in_group || has_nested_group_path(&path.tree, false),
+        UseTree::Group(group) => group
+            .items
+            .iter()
+            .any(|item| has_nested_group_path(item, true)),
+        UseTree::Name(_) | UseTree::Rename(_) | UseTree::Glob(_) => false,
     }
 }
 
@@ -91,6 +117,28 @@ fn let_bindings_are_single_names_with_explicit_types() {
     assert!(
         failures.is_empty(),
         "let bindings must be a single name with an explicit type:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn each_use_imports_from_one_module() {
+    let mut failures: Vec<String> = Vec::new();
+    let mut files: Vec<PathBuf> = rust_files(Path::new("src"));
+    files.extend(rust_files(Path::new("tests")));
+    for path in files {
+        let source: String = fs::read_to_string(&path).expect("read source file");
+        let syntax: syn::File = syn::parse_file(&source).expect("parse source file");
+        let mut visitor: UseVisitor = UseVisitor::default();
+        visitor.visit_file(&syntax);
+        for line in visitor.lines {
+            failures.push(format!("{}:{line}", path.display()));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "split `use a::{{b, c::D}}` into one `use` per module (`cargo +nightly fmt -- \
+         --config imports_granularity=Module` does it):\n{}",
         failures.join("\n")
     );
 }

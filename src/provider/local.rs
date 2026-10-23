@@ -3,21 +3,17 @@
 //! started on first use and stays up, so the model loads once; it loads while
 //! the first recording is made. Switching provider stops the other servers.
 
-use std::{
-    fs::{self, File},
-    os::unix::process::CommandExt,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{Duration, Instant},
-};
+use std::fs::{self, File};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde::Deserialize;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 
 /// The shared server loop, imported by each model's script.
 const SERVE: &str = include_str!("local/serve.py");

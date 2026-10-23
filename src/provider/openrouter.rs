@@ -2,11 +2,13 @@
 //! uploaded once dictation stops.
 
 use anyhow::{Context, Result, bail};
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{audio::SAMPLE_RATE, provider::BoxFuture};
+use crate::audio::SAMPLE_RATE;
+use crate::provider::BoxFuture;
 
 pub const MODEL: &str = "microsoft/mai-transcribe-2";
 

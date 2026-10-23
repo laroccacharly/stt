@@ -2,16 +2,14 @@
 //! PCM; `finalize` flushes the transcript of everything sent so far.
 
 use anyhow::{Context, Result, bail};
-use futures_util::{
-    SinkExt, StreamExt,
-    stream::{SplitSink, SplitStream},
-};
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::net::TcpStream;
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, client::IntoClientRequest, handshake::client::Request},
-};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use super::{BoxFuture, Connection, Live, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;

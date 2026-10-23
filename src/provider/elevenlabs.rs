@@ -1,18 +1,17 @@
 //! ElevenLabs Scribe realtime speech-to-text over WebSocket.
 
 use anyhow::{Context, Result, bail};
-use base64::{Engine, engine::general_purpose::STANDARD};
-use futures_util::{
-    SinkExt, StreamExt,
-    stream::{SplitSink, SplitStream},
-};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, client::IntoClientRequest, handshake::client::Request},
-};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use super::{BoxFuture, Connection, Live, Receive, Transmit, Update};
 use crate::audio::SAMPLE_RATE;

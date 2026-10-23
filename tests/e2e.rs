@@ -11,32 +11,24 @@
     clippy::missing_assert_message
 )]
 
-use std::{
-    collections::HashMap,
-    fs,
-    io::Write,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
-    time::{Duration, Instant},
-};
+use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::TcpListener,
-    sync::mpsc,
-    task::JoinHandle,
-};
-use tokio_tungstenite::{
-    accept_hdr_async,
-    tungstenite::{
-        Message,
-        handshake::server::{Request, Response},
-    },
-};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 
 const KEY: &str = "test-key";
 

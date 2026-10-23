@@ -7,25 +7,21 @@ mod hyprland;
 mod overlay;
 mod provider;
 
-use std::{
-    fs::{self, File, OpenOptions},
-    io::Write,
-    os::unix::process::CommandExt,
-    path::{Path, PathBuf},
-    process::{Command as Process, Output, Stdio},
-    thread,
-    time::Duration,
-};
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command as Process, Output, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use rustix::process::{Pid, Signal, kill_process};
-use tokio::{
-    io::AsyncWriteExt,
-    signal::unix::{Signal as UnixSignal, SignalKind, signal},
-    sync::mpsc,
-    time::timeout,
-};
+use tokio::io::AsyncWriteExt;
+use tokio::signal::unix::{self, Signal as UnixSignal, SignalKind};
+use tokio::sync::mpsc;
+use tokio::time;
 
 use audio::Microphone;
 use history::History;
@@ -380,9 +376,9 @@ struct StopSignals {
 impl StopSignals {
     fn new() -> Result<Self> {
         Ok(Self {
-            toggle: signal(SignalKind::user_defined2())?,
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
+            toggle: unix::signal(SignalKind::user_defined2())?,
+            interrupt: unix::signal(SignalKind::interrupt())?,
+            terminate: unix::signal(SignalKind::terminate())?,
         })
     }
 
@@ -559,7 +555,7 @@ async fn realtime_session(
     mic.stop().await;
     tx.commit().await?;
     // Wait for the transcript of the final commit, but not forever.
-    let finished: Result<()> = timeout(FINISH_TIMEOUT, async {
+    let finished: Result<()> = time::timeout(FINISH_TIMEOUT, async {
         while let Some(update) = rx.next().await {
             match update? {
                 Update::Committed(text) => {
