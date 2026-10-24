@@ -7,7 +7,6 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 
 const SOURCE_LINE: &str = r#"require("hypr.stt")"#;
-const BINDING: &str = "o.bind(\"END\", \"Toggle live speech to text\", \"stt toggle\")\n";
 
 fn hypr_dir() -> Result<PathBuf> {
     Ok(std::env::home_dir()
@@ -18,7 +17,13 @@ fn hypr_dir() -> Result<PathBuf> {
 pub fn install() -> Result<()> {
     let dir: PathBuf = hypr_dir()?;
     let binding: PathBuf = dir.join("stt.lua");
-    fs::write(&binding, BINDING)?;
+    // The absolute path: Hyprland's PATH often lacks `~/.cargo/bin`.
+    let exe: PathBuf = std::env::current_exe().context("cannot locate the stt binary")?;
+    let command: String = format!("{} toggle", exe.display());
+    fs::write(
+        &binding,
+        format!("o.bind(\"END\", \"Toggle live speech to text\", {command:?})\n"),
+    )?;
     let config_path: PathBuf = dir.join("hyprland.lua");
     let mut config: String = fs::read_to_string(&config_path)?;
     if !config.lines().any(|line| line.trim() == SOURCE_LINE) {
