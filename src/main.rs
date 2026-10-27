@@ -30,6 +30,9 @@ use provider::{Backend, Live, Provider, ReceiveDyn, TransmitDyn, Update, elevenl
 
 /// How long to wait for the final transcript after stopping.
 const FINISH_TIMEOUT: Duration = Duration::from_millis(4500);
+/// `stt transcribe` sends files in pieces this long, since the local models
+/// are built for short dictations.
+const FILE_CHUNK: Duration = Duration::from_secs(30);
 /// Notifications share one id so each replaces the previous.
 const NOTIFICATION_ID: u32 = 47511;
 /// Start/stop notifications are off for now; errors always notify.
@@ -53,6 +56,12 @@ enum Cmd {
     Status,
     /// Run a dictation session in the foreground.
     Record,
+    /// Print the transcript of an audio or video file, using the current
+    /// batch or local provider.
+    Transcribe {
+        /// Any file ffmpeg can decode.
+        file: PathBuf,
+    },
     /// Copy API keys from the environment (ELEVENLABS_API_KEY,
     /// CARTESIA_API_KEY, OPENROUTER_API_KEY) into the keyring.
     Login,
@@ -149,6 +158,12 @@ fn run(command: &Cmd) -> Result<()> {
             Ok(())
         }
         Cmd::Record => tokio::runtime::Runtime::new()?.block_on(record(&paths)),
+        Cmd::Transcribe { file } => {
+            let text: String =
+                tokio::runtime::Runtime::new()?.block_on(transcribe_file(&paths, file))?;
+            println!("{text}");
+            Ok(())
+        }
         Cmd::Login => login(),
         Cmd::Provider(ProviderCmd::Ls) => {
             let current: Provider = Provider::current()?;
@@ -339,21 +354,13 @@ async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
         } => {
             let key: String = provider::api_key(provider).await?;
             let recording: Vec<u8> = record_until_stopped(overlay, &mut stop).await?;
-            // The provider that actually transcribed, for the history.
-            let mut used: Provider = provider;
             // Includes a failed attempt before the fallback: the time you waited.
             let started: Instant = Instant::now();
-            let text: String = match transcribe(&key, &recording).await {
-                Ok(text) => text,
-                Err(error) if fallback => {
-                    used = Provider::ElevenLabsBatch;
-                    elevenlabs_fallback(&recording, error).await?
-                }
-                Err(error) => return Err(error),
-            };
+            let transcript: Transcript =
+                batch_transcribe(provider, transcribe, fallback, &key, &recording).await?;
             let elapsed: Duration = started.elapsed();
-            type_transcript(text.clone()).await;
-            remember(used, &recording, &text, elapsed).await;
+            type_transcript(transcript.text.clone()).await;
+            remember(transcript.provider, &recording, &transcript.text, elapsed).await;
             Ok(())
         }
         Backend::Local(model) => {
@@ -368,6 +375,73 @@ async fn session(overlay: &Overlay, runtime: &Path) -> Result<()> {
             remember(provider, &recording, &text, elapsed).await;
             Ok(())
         }
+    }
+}
+
+/// Transcribes `file` with the current provider in `FILE_CHUNK` pieces,
+/// without the microphone, overlay, typing or history.
+async fn transcribe_file(paths: &Paths, file: &Path) -> Result<String> {
+    let provider: Provider = Provider::current()?;
+    let mut texts: Vec<String> = Vec::new();
+    match provider.backend() {
+        Backend::Realtime(_) => bail!(
+            "{} only streams live audio; choose a batch or local provider with `stt provider set`",
+            provider.label()
+        ),
+        Backend::Batch {
+            transcribe,
+            fallback,
+        } => {
+            let key: String = provider::api_key(provider).await?;
+            let pcm: Vec<u8> = audio::decode(file).await?;
+            for chunk in audio::split_at_pauses(&pcm, FILE_CHUNK) {
+                texts.push(
+                    batch_transcribe(provider, transcribe, fallback, &key, chunk)
+                        .await?
+                        .text,
+                );
+            }
+        }
+        Backend::Local(model) => {
+            let server: local::Server = local::Server::new(model, &paths.runtime);
+            // Before decoding, so the model loads meanwhile.
+            server.ensure_running()?;
+            let pcm: Vec<u8> = audio::decode(file).await?;
+            for chunk in audio::split_at_pauses(&pcm, FILE_CHUNK) {
+                texts.push(server.transcribe(chunk).await?);
+            }
+        }
+    }
+    let texts: Vec<&str> = texts
+        .iter()
+        .map(|text| text.trim())
+        .filter(|text| !text.is_empty())
+        .collect();
+    Ok(texts.join(" "))
+}
+
+/// A batch transcript and the provider that actually produced it.
+struct Transcript {
+    provider: Provider,
+    text: String,
+}
+
+/// Transcribes PCM with a batch backend, falling back to ElevenLabs if it
+/// allows.
+async fn batch_transcribe(
+    provider: Provider,
+    transcribe: provider::Transcribe,
+    fallback: bool,
+    key: &str,
+    pcm: &[u8],
+) -> Result<Transcript> {
+    match transcribe(key, pcm).await {
+        Ok(text) => Ok(Transcript { provider, text }),
+        Err(error) if fallback => Ok(Transcript {
+            provider: Provider::ElevenLabsBatch,
+            text: elevenlabs_fallback(pcm, error).await?,
+        }),
+        Err(error) => Err(error),
     }
 }
 

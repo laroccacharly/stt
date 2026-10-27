@@ -1216,3 +1216,45 @@ async fn bark_transcribes_real_speech() {
 async fn onnxbark_transcribes_real_speech() {
     local_transcribes_real_speech("onnxbark").await;
 }
+
+// Multi-threaded: `stt transcribe` blocks this thread while the fake server answers.
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_prints_a_file_transcript() {
+    let (url, server) = fake_http_at("ws", 200, json!({"text": " hello file "})).await;
+    let sandbox = Sandbox::new(url);
+    assert!(
+        sandbox
+            .stt(&["provider", "set", "elevenlabs-batch"])
+            .status
+            .success()
+    );
+    let file = sandbox.dir.path().join("hello.wav");
+    let ffmpeg = Command::new("ffmpeg")
+        .args([
+            "-loglevel",
+            "error",
+            "-f",
+            "s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-i",
+        ])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.pcm"))
+        .arg(&file)
+        .status()
+        .unwrap();
+    assert!(ffmpeg.success(), "ffmpeg should write the wav");
+    let output = sandbox.stt(&["transcribe", file.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "hello file\n");
+    assert_eq!(sandbox.typed(), "", "should not type the transcript");
+
+    let request = server.await.unwrap();
+    assert_eq!(request.request_line, "POST /v1/speech-to-text HTTP/1.1");
+}
