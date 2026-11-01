@@ -16,6 +16,7 @@ import { recordCommand, toggleCommand, toggleDictation, transcribeCommand } from
 import { historyCommand } from "./commands/history.ts"
 import { installCommand, uninstallCommand } from "./commands/hyprland.ts"
 import { phononCommand } from "./commands/phonon.ts"
+import { serverCommand } from "./commands/server.ts"
 import { providerCommand } from "./commands/provider.ts"
 
 const secrets = Credentials.make([ApiKey])
@@ -32,6 +33,7 @@ const stt = Command.make("stt", {}, () => toggleDictation).pipe(
     installCommand,
     uninstallCommand,
     phononCommand,
+    serverCommand,
   ])
 )
 

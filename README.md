@@ -24,3 +24,7 @@ stt install
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## Local transcription API
+
+Run `stt serve` to listen on `127.0.0.1:4318`. The API accepts browser recordings and decodes them with ffmpeg before transcription using the configured provider. See [client/README.md](client/README.md) for the client contract.
