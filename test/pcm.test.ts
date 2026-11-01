@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { level, SAMPLE_RATE, splitAtPauses, wav } from "../src/audio/pcm.ts"
+import { isOwnWav, level, SAMPLE_RATE, splitAtPauses, wav } from "../src/audio/pcm.ts"
 
 const tone = (seconds: number, amplitude: number) => {
   const samples = new Int16Array(SAMPLE_RATE * seconds).fill(amplitude)
@@ -51,4 +51,15 @@ test("the WAV header describes the PCM", () => {
   expect(view.getUint32(24, true)).toBe(16_000)
   expect(view.getUint32(40, true)).toBe(4)
   expect([...out.subarray(44)]).toEqual([1, 2, 3, 4])
+})
+
+test("recognises only the WAV it writes, so other files go to ffmpeg", () => {
+  const file = wav(tone(1, 8000))
+  expect(isOwnWav(file, file.length)).toBe(true)
+  // A truncated upload, or another sample rate, must be decoded properly.
+  expect(isOwnWav(file, file.length - 2)).toBe(false)
+  const other = file.slice()
+  new DataView(other.buffer).setUint32(24, 44_100, true)
+  expect(isOwnWav(other, other.length)).toBe(false)
+  expect(isOwnWav(new TextEncoder().encode("not a wav file at all, but long enough to read"), 46)).toBe(false)
 })

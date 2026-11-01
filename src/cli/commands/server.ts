@@ -4,7 +4,8 @@ import { CredentialsError } from "effect-lib/credentials"
 import * as Systemd from "effect-lib/systemd"
 import { currentProvider } from "../../config/config.ts"
 import { cliScript } from "../../paths.ts"
-import { PROVIDERS } from "../../provider/provider.ts"
+import { Phonon } from "../../phonon/phonon.ts"
+import { PROVIDERS, type ProviderName } from "../../provider/provider.ts"
 import { transcriberFor } from "../../provider/transcriber.ts"
 import { startServer } from "../../server/server.ts"
 import { transcribeFile } from "../../session/transcribe-file.ts"
@@ -24,20 +25,27 @@ const withLoginHint = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A
 export const serverCommand = Command.make("serve", { port: Flag.Int("port").pipe(Flag.withDefault(4318)) }, ({ port }) => Effect.gen(function* () {
   const context = yield* Effect.context<Effect.Services<ReturnType<typeof transcribeFile>>>()
   const lock = yield* Semaphore.make(1)
+  // The provider the previous transcription used, so the local model is unloaded only when it changes.
+  let lastProvider: ProviderName | null = null
   const server = startServer({
     // Called while the caller is still speaking, so the model loads meanwhile and a missing key is reported early.
-    prepare: () => Effect.runPromiseWith(context)(withLoginHint(Effect.gen(function* () {
+    prepare: withLoginHint(Effect.gen(function* () {
       const transcriber = yield* transcriberFor(yield* currentProvider)
       yield* transcriber.prepare
-    }))),
-    transcribe: (path) => Effect.runPromiseWith(context)(withLoginHint(Effect.gen(function* () {
+    })).pipe(Effect.provide(context)),
+    transcribe: (path) => withLoginHint(Effect.gen(function* () {
       const provider = yield* currentProvider
+      if (provider !== lastProvider) {
+        // OpenRouter needs no local model, so let go of its memory; keep it while the provider stays.
+        if (provider === "openrouter") yield* (yield* Phonon).stop
+        lastProvider = provider
+      }
       const text = yield* transcribeFile(path, provider)
       return { text, provider, model: PROVIDERS[provider].model }
-    })).pipe((effect) => lock.withPermit(effect))),
+    })).pipe((effect) => lock.withPermit(effect), Effect.provide(context)),
   }, port)
   yield* Effect.logInfo(`stt server listening at ${server.url.href}`)
-  return yield* Effect.never.pipe(Effect.ensuring(Effect.promise(() => server.stop(true))))
+  return yield* Effect.never.pipe(Effect.ensuring(Effect.promise(() => server.stop())))
 })).pipe(Command.withDescription("Serve the local transcription API on 127.0.0.1"))
 
 export const SERVER_SERVICE: Systemd.ServiceConfig = {

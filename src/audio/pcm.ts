@@ -72,6 +72,21 @@ export const wav = (pcm: Uint8Array): Uint8Array<ArrayBuffer> => {
   return out
 }
 
+// Bytes before the samples in a WAV that `wav` wrote.
+export const WAV_HEADER_BYTES = 44
+
+// Whether `header` starts a WAV that `wav` wrote for a file of `size` bytes, whose samples are then read as is.
+export const isOwnWav = (header: Uint8Array, size: number): boolean => {
+  if (header.length < WAV_HEADER_BYTES) {
+    return false
+  }
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength)
+  const ascii = (offset: number, length: number) => new TextDecoder().decode(header.subarray(offset, offset + length))
+  return ascii(0, 4) === "RIFF" && ascii(8, 8) === "WAVEfmt " && view.getUint32(16, true) === 16 &&
+    view.getUint16(20, true) === 1 && view.getUint16(22, true) === 1 && view.getUint32(24, true) === SAMPLE_RATE &&
+    view.getUint16(34, true) === 16 && ascii(36, 4) === "data" && view.getUint32(40, true) === size - WAV_HEADER_BYTES
+}
+
 export const concatenate = (chunks: ReadonlyArray<Uint8Array>): Uint8Array => {
   const out = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0))
   let offset = 0

@@ -85,6 +85,41 @@ test.concurrent("a paste failure is notified and the dictation still saved", asy
   expect(savedDictations(sandbox).map((saved) => saved.transcript)).toEqual(["hello"])
 })
 
+test.concurrent("a transcript missing its provider and model is pasted, and only the history fails", async () => {
+  const server = Bun.serve({ port: 0, fetch: async (request) => {
+    await request.arrayBuffer()
+    return Response.json({ text: "hello" })
+  } })
+  using _fake = { [Symbol.dispose]: () => void server.stop(true) }
+  using sandbox = new Sandbox({ STT_SERVER_URL: server.url.origin })
+
+  await sandbox.dictate()
+
+  expect(sandbox.read("typed")).toBe("hello|")
+  expect(savedDictations(sandbox)).toHaveLength(0)
+  expect(sandbox.read("notified")).toContain("STT history failed: Server did not report the transcription provider")
+})
+
+test.concurrent("stt transcribe sends the file's real MIME type", async () => {
+  const contentTypes: Array<string | null> = []
+  const server = Bun.serve({ port: 0, fetch: async (request) => {
+    contentTypes.push(request.headers.get("content-type"))
+    await request.arrayBuffer()
+    return Response.json({ text: "file words" })
+  } })
+  using _fake = { [Symbol.dispose]: () => void server.stop(true) }
+  using sandbox = new Sandbox({ STT_SERVER_URL: server.url.origin })
+  const file = sandbox.path("sample.wav")
+  writeFileSync(file, "not really audio")
+
+  const transcribed = await sandbox.stt("transcribe", file)
+
+  expect(transcribed.code).toBe(0)
+  expect(transcribed.stdout).toBe("file words\n")
+  expect(contentTypes).toEqual([Bun.file(file).type])
+  expect(Bun.file(file).type).toBe("audio/x-wav")
+})
+
 test.concurrent("a stale PID file does not block a new dictation", async () => {
   using fixture = await openRouterSandbox(200, { text: "fresh" })
   const { sandbox } = fixture

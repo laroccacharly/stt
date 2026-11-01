@@ -3,7 +3,42 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect } from "effect"
 import { SttClient } from "../client/index.ts"
+import { startServer } from "../src/server/server.ts"
 import { fakeOpenRouter, Sandbox } from "./sandbox.ts"
+
+test("answers a health check and keeps other unknown paths JSON", async () => {
+  const server = startServer({
+    prepare: Effect.void,
+    transcribe: () => Effect.succeed({ model: "test-model", provider: "test-provider", text: "unused" }),
+  }, 0)
+  try {
+    const health = await fetch(new URL("/health", server.url))
+    expect(health.status).toBe(200)
+    expect(await health.json()).toEqual({ ok: true })
+
+    const missing = await fetch(new URL("/v1/missing", server.url), { method: "POST" })
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toEqual({ message: "Not found" })
+  } finally { await server.stop() }
+})
+
+test("accepts octet-stream and video bodies for the decoder", async () => {
+  const bodies: Array<string> = []
+  const server = startServer({
+    prepare: Effect.void,
+    transcribe: (path) => Effect.promise(async () => {
+      bodies.push(await Bun.file(path).text())
+      return { model: "test-model", provider: "test-provider", text: "unused" }
+    }),
+  }, 0)
+  try {
+    for (const contentType of ["application/octet-stream", "video/mp4"]) {
+      const response = await fetch(new URL("/v1/transcribe", server.url), { body: "bytes", headers: { "content-type": contentType }, method: "POST" })
+      expect(response.status).toBe(200)
+    }
+    expect(bodies).toEqual(["bytes", "bytes"])
+  } finally { await server.stop() }
+})
 
 test("client prepares, then sends browser audio through the server and transcription pipeline", async () => {
   using upstream = fakeOpenRouter(200, { text: "browser speech" })

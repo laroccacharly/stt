@@ -1,9 +1,8 @@
-import { Clock, Effect, Stream } from "effect"
+import { Clock, Effect, Schema, Stream } from "effect"
 import { Overlay, layer as overlayLayer } from "overlay"
 import { Microphone } from "../audio/microphone.ts"
 import { concatenate, level, wav } from "../audio/pcm.ts"
 import { SttClient, SttClientError } from "../../client/index.ts"
-import { Schema } from "effect"
 import { Notifier, notifyingErrors } from "../desktop/notifier.ts"
 import { Paster } from "../desktop/paster.ts"
 import { History } from "../history/history.ts"
@@ -48,16 +47,19 @@ export const record = Effect.gen(function* () {
   const pcm = yield* recordUntil(stop)
   const started = yield* Clock.currentTimeMillis
   const result = yield* (yield* SttClient).transcribeDetailed({ data: wav(pcm).buffer, contentType: "audio/wav" })
-  const provider = yield* Schema.decodeUnknownEffect(ProviderName)(result.provider).pipe(
-    Effect.mapError(() => new SttClientError({ message: "Server did not report the transcription provider" }))
-  )
-  if (result.model === undefined) return yield* new SttClientError({ message: "Server did not report the transcription model" })
   const transcript = result.text
   const transcriptionMs = (yield* Clock.currentTimeMillis) - started
+  // Paste first: a transcript the server described imperfectly is still a successful dictation.
   yield* insert(transcript)
-  const history = yield* History
   const notifier = yield* Notifier
-  yield* history
-    .save({ provider, model: result.model, pcm, transcript, transcriptionMs })
-    .pipe(Effect.catch((error) => notifier.notify("STT history failed", error.message, 4000)))
+  yield* Effect.gen(function* saveDictation() {
+    const provider = yield* Schema.decodeUnknownEffect(ProviderName)(result.provider).pipe(
+      Effect.mapError(() => new SttClientError({ message: "Server did not report the transcription provider", reason: "invalid-response" }))
+    )
+    if (result.model === undefined) {
+      return yield* new SttClientError({ message: "Server did not report the transcription model", reason: "invalid-response" })
+    }
+    const history = yield* History
+    yield* history.save({ provider, model: result.model, pcm, transcript, transcriptionMs })
+  }).pipe(Effect.catch((error) => notifier.notify("STT history failed", error.message, 4000)))
 }).pipe(notifyingErrors, Effect.scoped, Effect.provide(overlayLayer()))
