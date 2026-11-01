@@ -31,6 +31,7 @@ export class Sandbox {
   readonly dir = mkdtempSync(join(tmpdir(), "stt-test-"))
   readonly bin = join(this.dir, "bin")
   readonly env: Record<string, string>
+  private server: ReturnType<typeof Bun.spawn> | null = null
 
   constructor(extraEnv: Readonly<Record<string, string>> = {}) {
     mkdirSync(this.bin)
@@ -76,6 +77,26 @@ export class Sandbox {
     return readFileSync(path, "utf8")
   }
 
+  async startServer(): Promise<string> {
+    const reservation = Bun.serve({ port: 0, fetch: () => new Response() })
+    const port = reservation.port
+    await reservation.stop(true)
+    const url = `http://127.0.0.1:${port}`
+    this.env["STT_SERVER_URL"] = url
+    this.server = Bun.spawn(["bun", CLI, "serve", "--port", String(port)], { env: this.env, stdout: "ignore", stderr: "ignore" })
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { await fetch(url); return url } catch { await Bun.sleep(50) }
+    }
+    throw new Error("stt server did not start")
+  }
+
+  async stopServer(): Promise<void> {
+    if (this.server === null) return
+    this.server.kill()
+    await this.server.exited
+    this.server = null
+  }
+
   async stt(...args: ReadonlyArray<string>): Promise<Run> {
     const child = Bun.spawn(["bun", CLI, ...args], { env: this.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
@@ -108,6 +129,7 @@ export class Sandbox {
   }
 
   [Symbol.dispose](): void {
+    this.server?.kill()
     rmSync(this.dir, { recursive: true, force: true })
   }
 }

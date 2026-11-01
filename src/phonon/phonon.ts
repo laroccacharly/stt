@@ -1,30 +1,23 @@
 import { join } from "node:path"
-import { Context, Duration, Effect, FileSystem, Layer, Schedule, Schema, Stream } from "effect"
-import * as Systemd from "effect-lib/systemd"
+import { Context, Duration, Effect, FileSystem, Layer, Option, Schedule, Schema, Semaphore } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { cacheDirectory, cliScript, runtimeDirectory } from "../paths.ts"
+import { cacheDirectory, runtimeDirectory } from "../paths.ts"
 import { exchange, isListening, type NotListening } from "./socket.ts"
 
 export class PhononError extends Schema.TaggedError<PhononError>()("PhononError", {
   message: Schema.String,
 }) {}
 
-// The model server runs as this systemd user service, so it loads once and outlives each dictation.
-export const SERVICE: Systemd.ServiceConfig = {
-  name: "stt-phonon",
-  description: "Phonon-2.5 English speech-to-text server for stt",
-  script: cliScript,
-  args: ["phonon", "serve"],
-  restartSec: 5,
-}
-
 const SCRIPTS = ["serve.py", "phonon.py"]
 const PYTHON_DIRECTORY = join(import.meta.dir, "..", "..", "python")
 // The very first start installs the dependencies and downloads the model.
 const START_TIMEOUT = Duration.minutes(10)
-const LOGS_HINT = `see \`journalctl --user -u ${SERVICE.name}\``
+const LOGS_HINT = "see `journalctl --user -u stt-server`"
 
 export const socketPath = (): string => join(runtimeDirectory(), "phonon.sock")
+
+// The model's process and the server that started it: a model left by a server that is gone can be adopted.
+const ModelPid = Schema.fromJsonString(Schema.Struct({ model: Schema.Finite, server: Schema.Finite }))
 
 const Reply = Schema.fromJsonString(Schema.Struct({ text: Schema.optional(Schema.String), error: Schema.optional(Schema.String) }))
 
@@ -49,11 +42,11 @@ export class Phonon extends Context.Service<
   {
     // Downloads the model and its dependencies, showing progress.
     readonly prepare: Effect.Effect<void, PhononError>
-    // Runs the server in the foreground: what the systemd service runs.
+    // Runs the model server in the foreground, for `stt phonon serve`.
     readonly serve: Effect.Effect<void, PhononError>
-    // Starts the service unless it is serving or loading, so the model loads while you speak.
+    // Starts the model process unless it is already serving, so it loads while you speak.
     readonly ensureRunning: Effect.Effect<void, PhononError>
-    // Stops and removes the service, freeing the model's memory.
+    // Stops the model process, freeing its memory.
     readonly stop: Effect.Effect<void, PhononError>
     // PCM at SAMPLE_RATE to text, waiting for the server to come up if it is still loading.
     readonly transcribe: (pcm: Uint8Array) => Effect.Effect<string, PhononError>
@@ -64,12 +57,65 @@ export class Phonon extends Context.Service<
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-      const services = Layer.mergeAll(Layer.succeed(FileSystem.FileSystem)(fs), Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(spawner))
-      const systemd = <A>(effect: Effect.Effect<A, Systemd.SystemdServiceError, FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner>) =>
-        effect.pipe(
-          Effect.provide(services),
-          Effect.mapError((error) => new PhononError({ message: error.message }))
-        )
+      const lock = yield* Semaphore.make(1)
+      const pidPath = join(runtimeDirectory(), "phonon.pid")
+      // The model's process group, whether this server started it or adopted it from an earlier one.
+      let pid: number | null = null
+
+      const alive = (id: number) => {
+        try {
+          process.kill(id, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+
+      // SIGTERM to the model's process group, or to the process alone if it left the group.
+      const terminate = (id: number) => {
+        try {
+          process.kill(-id, "SIGTERM")
+          return
+        } catch {
+          process.kill(id, "SIGTERM")
+        }
+      }
+
+      // Records who owns the model, so a command that merely exits leaves it alone.
+      const claim = (model: number) => fs.writeFileString(pidPath, JSON.stringify({ model, server: process.pid }))
+
+      // The model's pid when this process started it, or when the server that did is gone; another live
+      // server's model is left alone, so a dictation exiting cannot stop the service's model.
+      const recordedPid = Effect.gen(function* () {
+        const text = yield* fs.readFileString(pidPath).pipe(Effect.orElseSucceed(() => ""))
+        const recorded = Schema.decodeOption(ModelPid)(text)
+        if (Option.isNone(recorded)) {
+          return null
+        }
+        const { model, server } = recorded.value
+        if (server === process.pid || !alive(server)) {
+          return model
+        }
+        return null
+      })
+
+      const stop = Effect.gen(function* () {
+        // A model an earlier server started is only known from its pid file.
+        const running = pid ?? (yield* recordedPid)
+        pid = null
+        if (running === null) {
+          return
+        }
+        if (alive(running)) {
+          // uv runs the python model in the group it leads, so one signal stops both.
+          terminate(running)
+          for (let attempt = 0; attempt < 50 && alive(running); attempt++) {
+            yield* Effect.sleep("100 millis")
+          }
+        }
+        yield* fs.remove(pidPath).pipe(Effect.ignore)
+      })
+      yield* Effect.addFinalizer(() => stop)
 
       // Copies the scripts to the cache directory, rewriting only what changed so uv keeps their environment.
       const writeScripts = Effect.gen(function* () {
@@ -94,30 +140,45 @@ export class Phonon extends Context.Service<
         }
       })
 
-      // `systemctl --user is-active`: active, activating, inactive, failed…
-      const serviceState = Effect.scoped(
-        Effect.gen(function* () {
-          const handle = yield* spawner.spawn(ChildProcess.make("systemctl", ["--user", "is-active", Systemd.unitName(SERVICE)], { stdout: "pipe", stderr: "ignore" }))
-          return (yield* Stream.mkString(Stream.decodeText(handle.stdout))).trim()
-        })
-      ).pipe(Effect.orElseSucceed(() => "unknown"))
-
-      const isStarting = serviceState.pipe(Effect.map((state) => state === "active" || state === "activating" || state === "reloading"))
-
-      const ensureRunning = Effect.gen(function* () {
-        if ((yield* isListening(socketPath())) || (yield* isStarting)) {
+      // Adopts a model an earlier server left behind, so this one can still stop it.
+      const adopt = Effect.gen(function* () {
+        if (pid !== null) {
           return
         }
-        yield* Effect.logInfo(`starting ${Systemd.unitName(SERVICE)}`)
-        yield* systemd(Systemd.reinstall(SERVICE))
+        const recorded = yield* recordedPid
+        if (recorded === null) {
+          return
+        }
+        pid = recorded
+        yield* claim(recorded).pipe(Effect.ignore)
       })
 
-      // NotListening while the service is still starting, so it is retried; a PhononError once it has stopped.
+      const ensureRunning = Effect.gen(function* () {
+        if (yield* isListening(socketPath())) {
+          yield* adopt
+          return
+        }
+        if (pid !== null && alive(pid)) return
+        pid = null
+        yield* fs.makeDirectory(runtimeDirectory(), { recursive: true }).pipe(
+          Effect.mapError((cause) => new PhononError({ message: cause.message }))
+        )
+        const script = yield* writeScripts
+        const spawned = yield* Effect.try({
+          try: () => Bun.spawn(["uv", "run", "--quiet", "--script", script, socketPath()], { detached: true, stdin: "ignore", stdout: "inherit", stderr: "inherit" }),
+          catch: (cause) => new PhononError({ message: `could not start uv: ${String(cause)}` }),
+        })
+        pid = spawned.pid
+        yield* claim(spawned.pid).pipe(
+          Effect.mapError((cause) => new PhononError({ message: `could not record the model's pid: ${cause.message}` }))
+        )
+      }).pipe((effect) => lock.withPermit(effect))
+
       const explainNotListening = Effect.fnUntraced(function* (error: NotListening) {
-        if (yield* isStarting) {
+        if (pid !== null && alive(pid)) {
           return yield* error
         }
-        return yield* new PhononError({ message: `The phonon server is not running; ${LOGS_HINT}` })
+        return yield* new PhononError({ message: `The phonon process stopped; ${LOGS_HINT}` })
       })
 
       const transcribe: (pcm: Uint8Array) => Effect.Effect<string, PhononError> = Effect.fn("Phonon.transcribe")(function* (pcm: Uint8Array) {
@@ -147,7 +208,7 @@ export class Phonon extends Context.Service<
           Effect.andThen(runUv([socketPath()]))
         ),
         ensureRunning,
-        stop: systemd(Systemd.uninstall(SERVICE)).pipe(Effect.asVoid),
+        stop: stop.pipe((effect) => lock.withPermit(effect)),
         transcribe,
       })
     })

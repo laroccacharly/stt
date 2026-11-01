@@ -1,13 +1,13 @@
 import { Clock, Effect, Stream } from "effect"
 import { Overlay, layer as overlayLayer } from "overlay"
 import { Microphone } from "../audio/microphone.ts"
-import { concatenate, level } from "../audio/pcm.ts"
-import { currentProvider } from "../config/config.ts"
+import { concatenate, level, wav } from "../audio/pcm.ts"
+import { SttClient, SttClientError } from "../../client/index.ts"
+import { Schema } from "effect"
 import { Notifier, notifyingErrors } from "../desktop/notifier.ts"
 import { Paster } from "../desktop/paster.ts"
 import { History } from "../history/history.ts"
-import { PROVIDERS } from "../provider/provider.ts"
-import { transcriberFor } from "../provider/transcriber.ts"
+import { ProviderName } from "../provider/provider.ts"
 import { holdPidFile } from "./pid-file.ts"
 import { stopRequested } from "./stop-signal.ts"
 
@@ -43,17 +43,21 @@ const insert = Effect.fnUntraced(function* (text: string) {
 export const record = Effect.gen(function* () {
   const stop = yield* stopRequested
   yield* holdPidFile
-  const provider = yield* currentProvider
-  const transcriber = yield* transcriberFor(provider)
-  yield* transcriber.prepare
+  // So the model loads while you speak, and a missing key fails before the recording is made.
+  yield* (yield* SttClient).prepare
   const pcm = yield* recordUntil(stop)
   const started = yield* Clock.currentTimeMillis
-  const transcript = yield* transcriber.transcribe(pcm)
+  const result = yield* (yield* SttClient).transcribeDetailed({ data: wav(pcm).buffer, contentType: "audio/wav" })
+  const provider = yield* Schema.decodeUnknownEffect(ProviderName)(result.provider).pipe(
+    Effect.mapError(() => new SttClientError({ message: "Server did not report the transcription provider" }))
+  )
+  if (result.model === undefined) return yield* new SttClientError({ message: "Server did not report the transcription model" })
+  const transcript = result.text
   const transcriptionMs = (yield* Clock.currentTimeMillis) - started
   yield* insert(transcript)
   const history = yield* History
   const notifier = yield* Notifier
   yield* history
-    .save({ provider, model: PROVIDERS[provider].model, pcm, transcript, transcriptionMs })
+    .save({ provider, model: result.model, pcm, transcript, transcriptionMs })
     .pipe(Effect.catch((error) => notifier.notify("STT history failed", error.message, 4000)))
 }).pipe(notifyingErrors, Effect.scoped, Effect.provide(overlayLayer()))

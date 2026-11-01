@@ -27,29 +27,19 @@ test.concurrent("provider set rejects an unknown provider", async () => {
   expect(sandbox.read("config/stt/config.json")).toBe("")
 })
 
-test.concurrent("choosing phonon downloads it and starts its systemd service; choosing OpenRouter removes the service", async () => {
+test.concurrent("choosing phonon downloads the model, then providers only update the shared configuration", async () => {
   using sandbox = new Sandbox()
-  const unit = sandbox.path("config", "systemd", "user", "stt-phonon.service")
-
-  const phonon = await sandbox.stt("provider", "set", "phonon-2.5-en")
-
-  expect(phonon.code).toBe(0)
+  expect((await sandbox.stt("provider", "set", "phonon-2.5-en")).code).toBe(0)
   expect(sandbox.read("uv")).toBe(`run --quiet --script ${sandbox.path("cache", "stt", "phonon.py")} --prepare\n`)
-  expect(readFileSync(sandbox.path("cache", "stt", "serve.py"), "utf8")).toBe(readFileSync(join(import.meta.dir, "..", "python", "serve.py"), "utf8"))
-  expect(readFileSync(unit, "utf8")).toContain(`${CLI} phonon serve`)
-  expect(sandbox.read("systemctl")).toContain("--user restart stt-phonon.service")
-
-  const openRouter = await sandbox.stt("provider", "set", "openrouter")
-
-  expect(openRouter.code).toBe(0)
-  expect(existsSync(unit)).toBe(false)
-  expect(sandbox.read("systemctl")).toContain("--user disable --now stt-phonon.service")
+  expect((await sandbox.stt("provider", "set", "openrouter")).code).toBe(0)
+  expect(sandbox.read("systemctl")).toBe("")
 })
 
 test.concurrent("transcribe prints a file's transcript without pasting or saving it", async () => {
   using server = fakeOpenRouter(200, { text: " hello file " })
   using sandbox = new Sandbox({ STT_OPENROUTER_URL: server.url })
   await sandbox.stt("provider", "set", "openrouter")
+  await sandbox.startServer()
   const file = sandbox.path("hello.wav")
   Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", join(FIXTURES, "hello.pcm"), file])
 
@@ -96,4 +86,21 @@ test.concurrent("install binds End in Hyprland and uninstall removes it", async 
 
   expect(readFileSync(config, "utf8")).toBe(`require("hypr.bindings")\n`)
   expect(existsSync(sandbox.path("home", ".config", "hypr", "stt.lua"))).toBe(false)
+})
+
+test.concurrent("manages the API server as a systemd user service", async () => {
+  using sandbox = new Sandbox()
+  const unit = sandbox.path("config", "systemd", "user", "stt-server.service")
+
+  expect((await sandbox.stt("service", "install")).code).toBe(0)
+  expect(readFileSync(unit, "utf8")).toContain(`${CLI} serve`)
+  expect(readFileSync(unit, "utf8")).toContain("WantedBy=default.target")
+  expect(sandbox.read("systemctl")).toContain("--user enable --now stt-server.service")
+  expect((await sandbox.stt("service", "reinstall")).code).toBe(0)
+  expect(sandbox.read("systemctl")).toContain("--user restart stt-server.service")
+  expect((await sandbox.stt("service", "status")).code).toBe(0)
+  expect(sandbox.read("systemctl")).toContain("--user status --no-pager --lines=20 stt-server.service")
+  expect((await sandbox.stt("service", "uninstall")).code).toBe(0)
+  expect(existsSync(unit)).toBe(false)
+  expect(sandbox.read("systemctl")).toContain("--user disable --now stt-server.service")
 })

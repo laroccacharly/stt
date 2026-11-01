@@ -18,6 +18,7 @@ Speech to text for Hyprland. Press **End** to start dictating and again to stop:
 ```sh
 (cd ../overlay && bun install && bun run build && bun link)
 bun install && bun link
+stt service install
 stt install
 ```
 
@@ -27,4 +28,4 @@ MIT, see [LICENSE](LICENSE).
 
 ## Local transcription API
 
-Run `stt serve` to listen on `127.0.0.1:4318`. The API accepts browser recordings and decodes them with ffmpeg before transcription using the configured provider. See [client/README.md](client/README.md) for the client contract.
+Run `stt service install` to enable and start the systemd user service at login. Use `stt service status`, `stt service reinstall`, and `stt service uninstall` to manage it. `stt serve` runs the server in the foreground. It listens on `127.0.0.1:4318`. Desktop dictation, `stt transcribe`, and API clients all use this service and the provider selected by `stt provider set`. The service does not inherit your shell's environment, so store the OpenRouter key with `stt login` rather than exporting it. The service starts the local Python model as a child when needed; it does not require a separate model service. The API accepts browser recordings and decodes them with ffmpeg before transcription. See [client/README.md](client/README.md) for the client contract.

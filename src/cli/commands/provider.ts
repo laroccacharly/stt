@@ -1,8 +1,7 @@
 import { Console, Effect, Option } from "effect"
-import * as Systemd from "effect-lib/systemd"
 import { Argument, Command, Prompt } from "effect/cli"
 import { currentProvider, saveProvider } from "../../config/config.ts"
-import { Phonon, SERVICE } from "../../phonon/phonon.ts"
+import { Phonon } from "../../phonon/phonon.ts"
 import { PROVIDERS, ProviderName } from "../../provider/provider.ts"
 
 const NAMES = ProviderName.literals
@@ -30,17 +29,13 @@ const choose = Effect.gen(function* () {
   return yield* Prompt.run(Prompt.Select({ message: `Provider (now ${current})`, choices }))
 })
 
-// Phonon runs as a service that holds the model in memory, so it starts with the choice and stops when another is chosen.
+// The server reads the selected provider for each transcription.
 const switchTo = Effect.fnUntraced(function* (provider: ProviderName) {
-  const phonon = yield* Phonon
   if (provider === "phonon-2.5-en") {
-    yield* phonon.prepare
-    yield* saveProvider(provider)
-    yield* phonon.ensureRunning
-    return yield* Console.log(`Using ${PROVIDERS[provider].label}; its server is ${Systemd.unitName(SERVICE)}`)
+    // Downloads the model and its dependencies now, where their progress shows, rather than during a dictation.
+    yield* (yield* Phonon).prepare
   }
   yield* saveProvider(provider)
-  yield* phonon.stop
   yield* Console.log(`Using ${PROVIDERS[provider].label}`)
 })
 

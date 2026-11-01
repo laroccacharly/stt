@@ -9,6 +9,7 @@ const openRouterSandbox = async (status: number, reply: object) => {
   const server = fakeOpenRouter(status, reply)
   const sandbox = new Sandbox({ STT_OPENROUTER_URL: server.url })
   expect((await sandbox.stt("provider", "set", "openrouter")).code).toBe(0)
+  await sandbox.startServer()
   return {
     sandbox,
     server,
@@ -137,6 +138,7 @@ const fakePhonon = (path: string, reply: object) => {
 test.concurrent("phonon transcribes through its socket without touching systemd when it is serving", async () => {
   using sandbox = new Sandbox()
   using phonon = fakePhonon(sandbox.path("runtime", "stt", "phonon.sock"), { text: " local words " })
+  await sandbox.startServer()
 
   await sandbox.dictate()
 
@@ -150,6 +152,7 @@ test.concurrent("phonon transcribes through its socket without touching systemd 
 test.concurrent("a phonon error is notified", async () => {
   using sandbox = new Sandbox()
   using _phonon = fakePhonon(sandbox.path("runtime", "stt", "phonon.sock"), { error: "ValueError: bad audio" })
+  await sandbox.startServer()
 
   await sandbox.dictate()
 

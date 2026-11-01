@@ -1,11 +1,62 @@
-import { Effect } from "effect"
-import { Command } from "effect/cli"
+import { Console, Effect, Semaphore } from "effect"
+import { Command, Flag } from "effect/cli"
+import { CredentialsError } from "effect-lib/credentials"
+import * as Systemd from "effect-lib/systemd"
+import { currentProvider } from "../../config/config.ts"
+import { cliScript } from "../../paths.ts"
+import { PROVIDERS } from "../../provider/provider.ts"
+import { transcriberFor } from "../../provider/transcriber.ts"
 import { startServer } from "../../server/server.ts"
 import { transcribeFile } from "../../session/transcribe-file.ts"
 
-export const serverCommand = Command.make("serve", {}, () => Effect.gen(function* () {
+// A service does not inherit the shell's environment, so a key exported there never reaches it.
+const withLoginHint = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | CredentialsError, R> =>
+  Effect.catchIf(
+    effect,
+    (error): error is E & CredentialsError => error instanceof CredentialsError && error.reason === "missing",
+    (error) => Effect.fail(new CredentialsError({
+      message: `${error.name} is not set for the transcription server: run \`stt login\` to store it, since the service does not inherit your shell's environment`,
+      name: error.name,
+      reason: error.reason,
+    }))
+  )
+
+export const serverCommand = Command.make("serve", { port: Flag.Int("port").pipe(Flag.withDefault(4318)) }, ({ port }) => Effect.gen(function* () {
   const context = yield* Effect.context<Effect.Services<ReturnType<typeof transcribeFile>>>()
-  const server = startServer((path) => Effect.runPromiseWith(context)(transcribeFile(path)))
+  const lock = yield* Semaphore.make(1)
+  const server = startServer({
+    // Called while the caller is still speaking, so the model loads meanwhile and a missing key is reported early.
+    prepare: () => Effect.runPromiseWith(context)(withLoginHint(Effect.gen(function* () {
+      const transcriber = yield* transcriberFor(yield* currentProvider)
+      yield* transcriber.prepare
+    }))),
+    transcribe: (path) => Effect.runPromiseWith(context)(withLoginHint(Effect.gen(function* () {
+      const provider = yield* currentProvider
+      const text = yield* transcribeFile(path, provider)
+      return { text, provider, model: PROVIDERS[provider].model }
+    })).pipe((effect) => lock.withPermit(effect))),
+  }, port)
   yield* Effect.logInfo(`stt server listening at ${server.url.href}`)
   return yield* Effect.never.pipe(Effect.ensuring(Effect.promise(() => server.stop(true))))
-})).pipe(Command.withDescription("Serve the local transcription API on 127.0.0.1:4318"))
+})).pipe(Command.withDescription("Serve the local transcription API on 127.0.0.1"))
+
+export const SERVER_SERVICE: Systemd.ServiceConfig = {
+  name: "stt-server",
+  description: "STT local transcription API",
+  script: cliScript,
+  args: ["serve"],
+  restartSec: 5,
+}
+
+export const serviceCommand = Command.make("service").pipe(
+  Command.withDescription("Manage the STT systemd user service"),
+  Command.withSubcommands([
+    Command.make("install", {}, () => Systemd.install(SERVER_SERVICE).pipe(Effect.andThen(Console.log("Installed and started stt-server.service")))),
+    Command.make("reinstall", {}, () => Systemd.reinstall(SERVER_SERVICE).pipe(Effect.andThen(Console.log("Rewrote and restarted stt-server.service")))),
+    Command.make("uninstall", {}, () => Systemd.uninstall(SERVER_SERVICE).pipe(Effect.andThen(Console.log("Stopped and removed stt-server.service")))),
+    Command.make("status", {}, () => Systemd.isInstalled(SERVER_SERVICE).pipe(Effect.flatMap((installed) => {
+      if (installed) return Systemd.status(SERVER_SERVICE)
+      return Console.log("stt-server.service is not installed")
+    }))),
+  ])
+)
