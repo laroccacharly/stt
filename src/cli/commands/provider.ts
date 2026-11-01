@@ -43,4 +43,7 @@ const set = Command.make("set", { provider: Argument.Literals("provider", NAMES)
   Option.match(provider, { onNone: () => choose, onSome: Effect.succeed }).pipe(Effect.flatMap(switchTo))
 ).pipe(Command.withDescription("Use this provider from now on; asks which one if not given"))
 
-export const providerCommand = Command.make("provider").pipe(Command.withDescription("List or choose the transcription provider"), Command.withSubcommands([list, set]))
+export const providerCommand = Command.make("provider").pipe(
+  Command.withDescription("List or choose the transcription provider"),
+  Command.withSubcommands([list, set])
+)

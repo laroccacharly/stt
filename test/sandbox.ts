@@ -85,7 +85,12 @@ export class Sandbox {
     this.env["STT_SERVER_URL"] = url
     this.server = Bun.spawn(["bun", CLI, "serve", "--port", String(port)], { env: this.env, stdout: "ignore", stderr: "ignore" })
     for (let attempt = 0; attempt < 100; attempt++) {
-      try { await fetch(url); return url } catch { await Bun.sleep(50) }
+      try {
+        await fetch(url)
+        return url
+      } catch {
+        await Bun.sleep(50)
+      }
     }
     throw new Error("stt server did not start")
   }

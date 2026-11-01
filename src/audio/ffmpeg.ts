@@ -10,10 +10,14 @@ const PCM_FORMAT = ["-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1"]
 
 // Every chunk is kept as it arrives and copied once, so a long recording is not re-copied per chunk.
 const collectBytes = <E>(stream: Stream.Stream<Uint8Array, E>) =>
-  Stream.runFold(stream, () => [] as Array<Uint8Array>, (chunks, chunk) => {
-    chunks.push(chunk)
-    return chunks
-  }).pipe(Effect.map((chunks) => Buffer.concat(chunks)))
+  Stream.runFold(
+    stream,
+    () => [] as Array<Uint8Array>,
+    (chunks, chunk) => {
+      chunks.push(chunk)
+      return chunks
+    }
+  ).pipe(Effect.map((chunks) => Buffer.concat(chunks)))
 
 // Every conversion goes through an ffmpeg child: PCM in or a file, bytes out on stdout.
 export class Ffmpeg extends Context.Service<
@@ -35,7 +39,9 @@ export class Ffmpeg extends Context.Service<
         const [stdout, stderr, code] = yield* Effect.scoped(
           Effect.gen(function* () {
             const handle = yield* spawner.spawn(command)
-            return yield* Effect.all([collectBytes(handle.stdout), Stream.mkString(Stream.decodeText(handle.stderr)), handle.exitCode], { concurrency: "unbounded" })
+            return yield* Effect.all([collectBytes(handle.stdout), Stream.mkString(Stream.decodeText(handle.stderr)), handle.exitCode], {
+              concurrency: "unbounded",
+            })
           })
         ).pipe(Effect.mapError((cause) => new FfmpegError({ message: `could not run ffmpeg to ${what}; is it installed? (${cause.message})` })))
         if (code !== 0) {

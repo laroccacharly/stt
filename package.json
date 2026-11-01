@@ -1,19 +1,20 @@
 {
   "name": "stt",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
-  "license": "MIT",
-  "type": "module",
   "description": "Speech to text for Hyprland: press End, speak, press End again",
+  "license": "MIT",
   "bin": {
     "stt": "./src/cli/index.ts"
   },
+  "type": "module",
   "scripts": {
     "stt": "bun ./src/cli/index.ts",
     "test": "bun test",
     "test:live": "LIVE=1 bun test",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint . && ts-lint-effect"
+    "lint": "oxlint . && oxfmt --check && ts-lint-effect",
+    "format": "oxfmt"
   },
   "dependencies": {
     "@effect/platform-bun": "4.1.1",
@@ -23,9 +24,10 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",
+    "oxfmt": "^0.75.0",
     "oxlint": "^1.90.0",
     "oxlint-tsgolint": "^7.0.2005",
-    "ts-lint": "github:laroccacharly/ts-lint#v0.6.0",
+    "ts-lint": "github:laroccacharly/ts-lint#v0.7.1",
     "typescript": "^7"
   }
 }

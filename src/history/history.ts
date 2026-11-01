@@ -89,7 +89,13 @@ export class History extends Context.Service<
           try: () =>
             opened
               .query("INSERT INTO transcriptions (provider, model, audio, transcript, transcription_ms) VALUES ($provider, $model, $audio, $transcript, $ms)")
-              .run({ provider: dictation.provider, model: dictation.model, audio, transcript: dictation.transcript, ms: Math.round(dictation.transcriptionMs) }),
+              .run({
+                provider: dictation.provider,
+                model: dictation.model,
+                audio,
+                transcript: dictation.transcript,
+                ms: Math.round(dictation.transcriptionMs),
+              }),
           catch: (cause) => failed("save to", String(cause)),
         })
       })
@@ -99,7 +105,9 @@ export class History extends Context.Service<
         const rows = yield* Effect.try({
           try: () =>
             opened
-              .query("SELECT strftime('%Y-%m-%d %H:%M:%S', created_at, 'localtime') AS time, provider, model, transcript FROM transcriptions ORDER BY id DESC LIMIT $limit")
+              .query(
+                "SELECT strftime('%Y-%m-%d %H:%M:%S', created_at, 'localtime') AS time, provider, model, transcript FROM transcriptions ORDER BY id DESC LIMIT $limit"
+              )
               .all({ limit }),
           catch: (cause) => failed("read", String(cause)),
         })

@@ -31,5 +31,11 @@ export const savedDictations = (sandbox: Sandbox): ReadonlyArray<Saved> => {
     audio: Uint8Array
   }>
   database.close()
-  return rows.map((row) => ({ provider: row.provider, model: row.model, transcript: row.transcript, transcriptionMs: row.transcription_ms, samples: decodedSamples(row.audio) }))
+  return rows.map((row) => ({
+    provider: row.provider,
+    model: row.model,
+    transcript: row.transcript,
+    transcriptionMs: row.transcription_ms,
+    samples: decodedSamples(row.audio),
+  }))
 }

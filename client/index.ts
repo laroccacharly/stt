@@ -29,12 +29,15 @@ export interface SttClientOptions {
   readonly timeout?: Duration.Input
 }
 
-export class SttClient extends Context.Service<SttClient, {
-  /** Asks the server to start the local model or check the key the next transcription needs. */
-  readonly prepare: Effect.Effect<void, SttClientError>
-  readonly transcribe: (audio: AudioInput) => Effect.Effect<string, SttClientError>
-  readonly transcribeDetailed: (audio: AudioInput) => Effect.Effect<Transcript, SttClientError>
-}>()("stt/client/SttClient") {
+export class SttClient extends Context.Service<
+  SttClient,
+  {
+    /** Asks the server to start the local model or check the key the next transcription needs. */
+    readonly prepare: Effect.Effect<void, SttClientError>
+    readonly transcribe: (audio: AudioInput) => Effect.Effect<string, SttClientError>
+    readonly transcribeDetailed: (audio: AudioInput) => Effect.Effect<Transcript, SttClientError>
+  }
+>()("stt/client/SttClient") {
   static layer(baseUrl: string, options: SttClientOptions = {}) {
     // A long file or a cold model load can take many minutes, so only a caller that asks for a limit gets one.
     const limited = <A>(effect: Effect.Effect<A, SttClientError>): Effect.Effect<A, SttClientError> => {
@@ -42,32 +45,39 @@ export class SttClient extends Context.Service<SttClient, {
         return effect
       }
       const timeout = Duration.fromInputUnsafe(options.timeout)
-      return effect.pipe(Effect.timeoutOrElse({
-        duration: timeout,
-        orElse: () => Effect.fail(new SttClientError({
-          message: `stt-server at ${baseUrl} did not answer within ${Duration.format(timeout)}`,
-          reason: "timeout",
-        })),
-      }))
+      return effect.pipe(
+        Effect.timeoutOrElse({
+          duration: timeout,
+          orElse: () =>
+            Effect.fail(
+              new SttClientError({
+                message: `stt-server at ${baseUrl} did not answer within ${Duration.format(timeout)}`,
+                reason: "timeout",
+              })
+            ),
+        })
+      )
     }
 
     const call = (path: string, init: RequestInit): Effect.Effect<Response, SttClientError> =>
       Effect.tryPromise({
         try: (signal) => fetch(new URL(path, baseUrl), { ...init, signal }),
-        catch: () => new SttClientError({
-          message: `stt-server is not reachable at ${baseUrl}; start it with \`stt service install\``,
-          reason: "unreachable",
-        }),
+        catch: () =>
+          new SttClientError({
+            message: `stt-server is not reachable at ${baseUrl}; start it with \`stt service install\``,
+            reason: "unreachable",
+          }),
       })
 
     // The body of a response that should carry JSON, or an invalid-response failure when it does not.
     const bodyOf = (response: Response): Effect.Effect<Schema.Json, SttClientError> =>
       Effect.tryPromise({
         try: () => response.json(),
-        catch: () => new SttClientError({
-          message: `Invalid stt response (HTTP ${response.status})`,
-          reason: "invalid-response",
-        }),
+        catch: () =>
+          new SttClientError({
+            message: `Invalid stt response (HTTP ${response.status})`,
+            reason: "invalid-response",
+          }),
       })
 
     // The server explains a failure in `{ message }`; a body it cannot parse leaves only the status.
@@ -83,7 +93,9 @@ export class SttClient extends Context.Service<SttClient, {
         return yield* new SttClientError({ message: `stt request failed (HTTP ${response.status})`, reason: "server" })
       })
 
-    const transcribeDetailed: (audio: AudioInput) => Effect.Effect<Transcript, SttClientError> = Effect.fn("SttClient.transcribeDetailed")(function* (audio: AudioInput) {
+    const transcribeDetailed: (audio: AudioInput) => Effect.Effect<Transcript, SttClientError> = Effect.fn("SttClient.transcribeDetailed")(function* (
+      audio: AudioInput
+    ) {
       const response = yield* call("/v1/transcribe", {
         body: audio.data,
         headers: { "content-type": audio.contentType },
@@ -106,10 +118,12 @@ export class SttClient extends Context.Service<SttClient, {
       yield* Effect.promise(() => response.text()).pipe(Effect.ignore)
     }).pipe(limited)
 
-    return Layer.succeed(SttClient)(SttClient.of({
-      prepare,
-      transcribe: (audio) => transcribeDetailed(audio).pipe(Effect.map((result) => result.text)),
-      transcribeDetailed,
-    }))
+    return Layer.succeed(SttClient)(
+      SttClient.of({
+        prepare,
+        transcribe: (audio) => transcribeDetailed(audio).pipe(Effect.map((result) => result.text)),
+        transcribeDetailed,
+      })
+    )
   }
 }

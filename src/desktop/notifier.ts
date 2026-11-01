@@ -15,7 +15,11 @@ export class Notifier extends Context.Service<
     Notifier,
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-      const notify: (summary: string, body: string, timeoutMs?: number) => Effect.Effect<void> = Effect.fn("Notifier.notify")(function* (summary: string, body: string, timeoutMs = 5000) {
+      const notify: (summary: string, body: string, timeoutMs?: number) => Effect.Effect<void> = Effect.fn("Notifier.notify")(function* (
+        summary: string,
+        body: string,
+        timeoutMs = 5000
+      ) {
         yield* Effect.logInfo(`notify: ${summary}: ${body}`)
         const command = ChildProcess.make("notify-send", ["--app-name=stt", `--replace-id=${NOTIFICATION_ID}`, `--expire-time=${timeoutMs}`, summary, body], {
           stdout: "ignore",

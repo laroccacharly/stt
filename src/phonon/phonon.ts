@@ -134,7 +134,9 @@ export class Phonon extends Context.Service<
       const runUv = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
         const script = yield* writeScripts
         const command = ChildProcess.make("uv", ["run", "--quiet", "--script", script, ...args], { stdin: "ignore", stdout: "inherit", stderr: "inherit" })
-        const code = yield* spawner.exitCode(command).pipe(Effect.mapError((cause) => new PhononError({ message: `could not start uv; is it installed? (${cause.message})` })))
+        const code = yield* spawner
+          .exitCode(command)
+          .pipe(Effect.mapError((cause) => new PhononError({ message: `could not start uv; is it installed? (${cause.message})` })))
         if (code !== 0) {
           return yield* new PhononError({ message: `uv ${args.join(" ")} exited with ${code}` })
         }
@@ -160,18 +162,15 @@ export class Phonon extends Context.Service<
         }
         if (pid !== null && alive(pid)) return
         pid = null
-        yield* fs.makeDirectory(runtimeDirectory(), { recursive: true }).pipe(
-          Effect.mapError((cause) => new PhononError({ message: cause.message }))
-        )
+        yield* fs.makeDirectory(runtimeDirectory(), { recursive: true }).pipe(Effect.mapError((cause) => new PhononError({ message: cause.message })))
         const script = yield* writeScripts
         const spawned = yield* Effect.try({
-          try: () => Bun.spawn(["uv", "run", "--quiet", "--script", script, socketPath()], { detached: true, stdin: "ignore", stdout: "inherit", stderr: "inherit" }),
+          try: () =>
+            Bun.spawn(["uv", "run", "--quiet", "--script", script, socketPath()], { detached: true, stdin: "ignore", stdout: "inherit", stderr: "inherit" }),
           catch: (cause) => new PhononError({ message: `could not start uv: ${String(cause)}` }),
         })
         pid = spawned.pid
-        yield* claim(spawned.pid).pipe(
-          Effect.mapError((cause) => new PhononError({ message: `could not record the model's pid: ${cause.message}` }))
-        )
+        yield* claim(spawned.pid).pipe(Effect.mapError((cause) => new PhononError({ message: `could not record the model's pid: ${cause.message}` })))
       }).pipe((effect) => lock.withPermit(effect))
 
       const explainNotListening = Effect.fnUntraced(function* (error: NotListening) {

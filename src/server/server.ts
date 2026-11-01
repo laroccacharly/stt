@@ -36,8 +36,7 @@ const answered = (effect: Effect.Effect<HttpServerResponse.HttpServerResponse, A
     Effect.catchCause((cause) => Effect.logError("transcription failed", Cause.pretty(cause)).pipe(Effect.as(failed({ message: "Transcription failed" }))))
   )
 
-const isMedia = (contentType: string) =>
-  ["audio/", "video/", "application/octet-stream"].some((prefix) => contentType.startsWith(prefix))
+const isMedia = (contentType: string) => ["audio/", "video/", "application/octet-stream"].some((prefix) => contentType.startsWith(prefix))
 
 // A private directory for one upload, removed with everything in it when the request ends.
 const requestDirectory = Effect.acquireRelease(
@@ -51,17 +50,21 @@ const transcribeRoute = (api: TranscriptionApi) =>
     if (!isMedia(contentType)) {
       return Effect.succeed(json({ message: "Expected audio or video" }, 415))
     }
-    return answered(Effect.scoped(Effect.gen(function* () {
-      const path = join(yield* requestDirectory, "audio")
-      const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.mapError((error) => ({ message: error.message })))
-      yield* Effect.tryPromise({ try: () => Bun.write(path, web), catch: (cause) => ({ message: `could not store the upload: ${String(cause)}` }) })
-      // Bun enforces maxRequestBodySize, so the body is already within the limit here.
-      const { size } = yield* Effect.promise(() => stat(path))
-      if (size === 0) {
-        return json({ message: "Recording is empty" }, 400)
-      }
-      return json(yield* api.transcribe(path))
-    })))
+    return answered(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const path = join(yield* requestDirectory, "audio")
+          const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.mapError((error) => ({ message: error.message })))
+          yield* Effect.tryPromise({ try: () => Bun.write(path, web), catch: (cause) => ({ message: `could not store the upload: ${String(cause)}` }) })
+          // Bun enforces maxRequestBodySize, so the body is already within the limit here.
+          const { size } = yield* Effect.promise(() => stat(path))
+          if (size === 0) {
+            return json({ message: "Recording is empty" }, 400)
+          }
+          return json(yield* api.transcribe(path))
+        })
+      )
+    )
   })
 
 const routes = (api: TranscriptionApi) => [

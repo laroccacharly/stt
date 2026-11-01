@@ -86,10 +86,13 @@ test.concurrent("a paste failure is notified and the dictation still saved", asy
 })
 
 test.concurrent("a transcript missing its provider and model is pasted, and only the history fails", async () => {
-  const server = Bun.serve({ port: 0, fetch: async (request) => {
-    await request.arrayBuffer()
-    return Response.json({ text: "hello" })
-  } })
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      await request.arrayBuffer()
+      return Response.json({ text: "hello" })
+    },
+  })
   using _fake = { [Symbol.dispose]: () => void server.stop(true) }
   using sandbox = new Sandbox({ STT_SERVER_URL: server.url.origin })
 
@@ -102,11 +105,14 @@ test.concurrent("a transcript missing its provider and model is pasted, and only
 
 test.concurrent("stt transcribe sends the file's real MIME type", async () => {
   const contentTypes: Array<string | null> = []
-  const server = Bun.serve({ port: 0, fetch: async (request) => {
-    contentTypes.push(request.headers.get("content-type"))
-    await request.arrayBuffer()
-    return Response.json({ text: "file words" })
-  } })
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      contentTypes.push(request.headers.get("content-type"))
+      await request.arrayBuffer()
+      return Response.json({ text: "file words" })
+    },
+  })
   using _fake = { [Symbol.dispose]: () => void server.stop(true) }
   using sandbox = new Sandbox({ STT_SERVER_URL: server.url.origin })
   const file = sandbox.path("sample.wav")

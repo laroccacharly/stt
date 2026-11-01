@@ -82,9 +82,17 @@ export const isOwnWav = (header: Uint8Array, size: number): boolean => {
   }
   const view = new DataView(header.buffer, header.byteOffset, header.byteLength)
   const ascii = (offset: number, length: number) => new TextDecoder().decode(header.subarray(offset, offset + length))
-  return ascii(0, 4) === "RIFF" && ascii(8, 8) === "WAVEfmt " && view.getUint32(16, true) === 16 &&
-    view.getUint16(20, true) === 1 && view.getUint16(22, true) === 1 && view.getUint32(24, true) === SAMPLE_RATE &&
-    view.getUint16(34, true) === 16 && ascii(36, 4) === "data" && view.getUint32(40, true) === size - WAV_HEADER_BYTES
+  return (
+    ascii(0, 4) === "RIFF" &&
+    ascii(8, 8) === "WAVEfmt " &&
+    view.getUint32(16, true) === 16 &&
+    view.getUint16(20, true) === 1 &&
+    view.getUint16(22, true) === 1 &&
+    view.getUint32(24, true) === SAMPLE_RATE &&
+    view.getUint16(34, true) === 16 &&
+    ascii(36, 4) === "data" &&
+    view.getUint32(40, true) === size - WAV_HEADER_BYTES
+  )
 }
 
 export const concatenate = (chunks: ReadonlyArray<Uint8Array>): Uint8Array => {

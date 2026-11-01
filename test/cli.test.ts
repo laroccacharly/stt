@@ -58,7 +58,9 @@ test.concurrent("a history from before the transcription time was recorded is mi
   mkdirSync(join(path, ".."), { recursive: true })
   const database = new Database(path)
   database.run(readFileSync(join(import.meta.dir, "..", "migrations", "0001_create_transcriptions.sql"), "utf8"))
-  database.run("INSERT INTO transcriptions (provider, model, audio, transcript) VALUES ('onnxbark', 'ConwayResearch/Underdog-Bark-3.0-Clean', x'', 'old words')")
+  database.run(
+    "INSERT INTO transcriptions (provider, model, audio, transcript) VALUES ('onnxbark', 'ConwayResearch/Underdog-Bark-3.0-Clean', x'', 'old words')"
+  )
   database.run("PRAGMA user_version = 1")
   database.close()
 

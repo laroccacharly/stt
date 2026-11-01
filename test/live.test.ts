@@ -40,7 +40,11 @@ live(
         expect(words(transcribed.stdout)).toBe(expected)
       }
       const socket = sandbox.path("runtime", "stt", "phonon.sock")
-      const modelProcesses = () => Bun.spawnSync(["ps", "-eo", "pid=,args="]).stdout.toString().split("\n").filter((line) => line.includes(socket))
+      const modelProcesses = () =>
+        Bun.spawnSync(["ps", "-eo", "pid=,args="])
+          .stdout.toString()
+          .split("\n")
+          .filter((line) => line.includes(socket))
       expect(modelProcesses().length).toBeGreaterThan(0)
       await sandbox.stopServer()
       for (let attempt = 0; attempt < 100 && modelProcesses().length > 0; attempt++) await Bun.sleep(50)

@@ -1,9 +1,14 @@
 {
   "name": "@laroccacharly/stt-client",
   "version": "0.3.0",
-  "type": "module",
   "license": "MIT",
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
+  "type": "module",
   "exports": "./index.ts",
-  "files": ["index.ts", "README.md"],
-  "peerDependencies": { "effect": "^4.1.1" }
+  "peerDependencies": {
+    "effect": "^4.1.1"
+  }
 }

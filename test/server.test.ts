@@ -7,10 +7,13 @@ import { startServer } from "../src/server/server.ts"
 import { fakeOpenRouter, Sandbox } from "./sandbox.ts"
 
 test("answers a health check and keeps other unknown paths JSON", async () => {
-  const server = startServer({
-    prepare: Effect.void,
-    transcribe: () => Effect.succeed({ model: "test-model", provider: "test-provider", text: "unused" }),
-  }, 0)
+  const server = startServer(
+    {
+      prepare: Effect.void,
+      transcribe: () => Effect.succeed({ model: "test-model", provider: "test-provider", text: "unused" }),
+    },
+    0
+  )
   try {
     const health = await fetch(new URL("/health", server.url))
     expect(health.status).toBe(200)
@@ -19,25 +22,33 @@ test("answers a health check and keeps other unknown paths JSON", async () => {
     const missing = await fetch(new URL("/v1/missing", server.url), { method: "POST" })
     expect(missing.status).toBe(404)
     expect(await missing.json()).toEqual({ message: "Not found" })
-  } finally { await server.stop() }
+  } finally {
+    await server.stop()
+  }
 })
 
 test("accepts octet-stream and video bodies for the decoder", async () => {
   const bodies: Array<string> = []
-  const server = startServer({
-    prepare: Effect.void,
-    transcribe: (path) => Effect.promise(async () => {
-      bodies.push(await Bun.file(path).text())
-      return { model: "test-model", provider: "test-provider", text: "unused" }
-    }),
-  }, 0)
+  const server = startServer(
+    {
+      prepare: Effect.void,
+      transcribe: (path) =>
+        Effect.promise(async () => {
+          bodies.push(await Bun.file(path).text())
+          return { model: "test-model", provider: "test-provider", text: "unused" }
+        }),
+    },
+    0
+  )
   try {
     for (const contentType of ["application/octet-stream", "video/mp4"]) {
       const response = await fetch(new URL("/v1/transcribe", server.url), { body: "bytes", headers: { "content-type": contentType }, method: "POST" })
       expect(response.status).toBe(200)
     }
     expect(bodies).toEqual(["bytes", "bytes"])
-  } finally { await server.stop() }
+  } finally {
+    await server.stop()
+  }
 })
 
 test("client prepares, then sends browser audio through the server and transcription pipeline", async () => {
@@ -48,17 +59,34 @@ test("client prepares, then sends browser audio through the server and transcrip
   const url = await sandbox.startServer()
   const client = SttClient.layer(url)
 
-  await Effect.runPromise(Effect.gen(function* () {
-    yield* (yield* SttClient).prepare
-  }).pipe(Effect.provide(client)))
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* (yield* SttClient).prepare
+    }).pipe(Effect.provide(client))
+  )
   expect(upstream.requests).toHaveLength(0)
 
-  const encoded = Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.1", "-c:a", "libopus", "-f", "webm", "pipe:1"])
+  const encoded = Bun.spawnSync([
+    "ffmpeg",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    "sine=frequency=440:duration=0.1",
+    "-c:a",
+    "libopus",
+    "-f",
+    "webm",
+    "pipe:1",
+  ])
   expect(encoded.exitCode).toBe(0)
   const data = Uint8Array.from(encoded.stdout).buffer
-  const transcript = await Effect.runPromise(Effect.gen(function* () {
-    return yield* (yield* SttClient).transcribeDetailed({ data, contentType: "audio/webm" })
-  }).pipe(Effect.provide(client)))
+  const transcript = await Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* (yield* SttClient).transcribeDetailed({ data, contentType: "audio/webm" })
+    }).pipe(Effect.provide(client))
+  )
   expect(transcript).toEqual({ model: "microsoft/mai-transcribe-2", provider: "openrouter", text: "browser speech" })
   expect(upstream.requests).toHaveLength(1)
   expect(upstream.requests[0]?.body.input_audio.format).toBe("wav")
@@ -93,7 +121,11 @@ test("a model an earlier server left behind is stopped when OpenRouter is used",
   try {
     const file = sandbox.path("hello.wav")
     Bun.spawnSync(["ffmpeg", "-loglevel", "error", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", join(import.meta.dir, "fixtures", "hello.pcm"), file])
-    const response = await fetch(`${url}/v1/transcribe`, { body: new Uint8Array(await Bun.file(file).arrayBuffer()), headers: { "content-type": "audio/wav" }, method: "POST" })
+    const response = await fetch(`${url}/v1/transcribe`, {
+      body: new Uint8Array(await Bun.file(file).arrayBuffer()),
+      headers: { "content-type": "audio/wav" },
+      method: "POST",
+    })
     expect(await response.json()).toMatchObject({ text: "remote" })
     expect(await Promise.race([model.exited.then(() => true), Bun.sleep(3_000).then(() => false)])).toBe(true)
   } finally {

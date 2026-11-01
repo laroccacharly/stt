@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-import { SttClient } from "../../client/index.ts"
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Logger } from "effect"
 import * as Credentials from "effect-lib/credentials"
 import { ApiKey } from "effect-lib/stt"
 import { Command } from "effect/cli"
+import { SttClient } from "../../client/index.ts"
 import packageJson from "../../package.json" with { type: "json" }
 import { Ffmpeg } from "../audio/ffmpeg.ts"
 import { Microphone } from "../audio/microphone.ts"
@@ -17,8 +17,8 @@ import { recordCommand, toggleCommand, toggleDictation, transcribeCommand } from
 import { historyCommand } from "./commands/history.ts"
 import { installCommand, uninstallCommand } from "./commands/hyprland.ts"
 import { phononCommand } from "./commands/phonon.ts"
-import { serverCommand, serviceCommand } from "./commands/server.ts"
 import { providerCommand } from "./commands/provider.ts"
+import { serverCommand, serviceCommand } from "./commands/server.ts"
 
 const secrets = Credentials.make([ApiKey])
 
@@ -40,7 +40,16 @@ const stt = Command.make("stt", {}, () => toggleDictation).pipe(
 )
 
 // Logs go to stderr, so `stt transcribe` prints the transcript alone and the recorder's log has both.
-const AppLive = Layer.mergeAll(SttClient.layer(process.env["STT_SERVER_URL"] ?? "http://127.0.0.1:4318"), Ffmpeg.layer, Microphone.layer, Notifier.layer, Paster.layer, Phonon.layer, openRouterLayer, Layer.succeed(Logger.LogToStderr, true)).pipe(
+const AppLive = Layer.mergeAll(
+  SttClient.layer(process.env["STT_SERVER_URL"] ?? "http://127.0.0.1:4318"),
+  Ffmpeg.layer,
+  Microphone.layer,
+  Notifier.layer,
+  Paster.layer,
+  Phonon.layer,
+  openRouterLayer,
+  Layer.succeed(Logger.LogToStderr, true)
+).pipe(
   Layer.provideMerge(History.layer.pipe(Layer.provide(Ffmpeg.layer))),
   Layer.provideMerge(secrets.layer(Credentials.bunKeyring())),
   Layer.provideMerge(BunServices.layer)
