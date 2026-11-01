@@ -1,22 +1,36 @@
 # Agent notes
 
-## After every change to the app
+stt is a Bun + Effect CLI (`src/cli/index.ts`, linked as `stt` with `bun link`).
+`stt toggle` (the End key) starts `stt record` in the background, or stops it
+with SIGUSR2; the recording is transcribed by the current provider, pasted
+with `wl-copy` + `wtype`, and saved to the SQLite history
+(`migrations/*.sql`, FLAC through ffmpeg).
 
-Whenever you change the app's code or behaviour (anything under `src/`, `Cargo.toml` dependencies, etc.):
+- Providers: `phonon-2.5-en`, a Python server (`python/`) run through `uv` as
+  the `stt-phonon` systemd user service and reached over a Unix socket; and
+  `openrouter`, through `effect-lib/stt`.
+- Plumbing comes from `effect-lib` (`github:laroccacharly/effect-lib`):
+  `credentials` (OPENROUTER_API_KEY, `stt login`), `systemd`, `json-store`
+  (`~/.config/stt/config.json`) and `stt`.
+- The waveform overlay is the `overlay` package (`../overlay`, napi-rs),
+  linked with `bun link`.
 
-1. **Bump the version first** in `Cargo.toml` (`version = "x.y.z"`): patch for fixes, minor for new features.
-2. **Run the tests**: `cargo test`.
-3. **Run the linter**: `cargo clippy --all-targets` must print no warnings.
-4. **Reinstall the binary** so the End key uses the new build: `cargo install --path .`
-5. Check it: `stt --version` should print the new version.
+## After every change
 
-The Hyprland binding runs `~/.cargo/bin/stt`, so an unreinstalled change isn't live.
+1. Bump the version in `package.json`: patch for fixes, minor for features.
+2. `bun run test` (fakes for every external tool, under 5 s) and, for model or
+   API changes, `bun run test:live`.
+3. `bun run typecheck` and `bun run lint` must print no errors or warnings.
+4. A change to the phonon server (`python/`, `src/phonon/`) needs
+   `systemctl --user restart stt-phonon`. Everything else is live at the next
+   End press, since `stt` runs from this checkout.
 
-## Style
+# Learning more about Effect
 
-Follow the Google Rust style guide, saved in `docs/rust-style-guide.md`. The
-mechanical parts are enforced by the `[lints.clippy]` table in `Cargo.toml`
-(plus `clippy.toml`) and by `tests/style.rs` (typed `let` bindings, one module
-per `use`); the rest (naming, module layout, iterator chains vs.
-loops, generics vs. `dyn`) is on you when writing code. Don't silence a lint
-with `#[allow]` without a comment saying why.
+This repository uses the Effect Typescript library.
+
+Before writing any Effect code, first read `node_modules/effect/AGENTS.md`
+**completely**, and follow the links in the file when required.
+
+If you need to learn more about particular Effect apis and concepts that the
+guide doesn't cover, search through the source code in `node_modules/effect/src`.

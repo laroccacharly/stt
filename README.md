@@ -1,6 +1,6 @@
 # stt
 
-Live dictation for Hyprland. Press **End** to start and again to stop. Your speech is transcribed by a cloud speech-to-text provider or a local model (Phonon-2.5 English, Parakeet Redux, Underdog Bark 3.0 Clean, on the CPU or on the GPU through tinybark's ONNX backend), the text is typed into the focused window, and a waveform overlay shows you're recording.
+Speech to text for Hyprland. Press **End** to start dictating and again to stop: the recording is transcribed by a local model (Phonon-2.5 English) or by OpenRouter, the text is pasted into the focused window, and a waveform overlay shows you're recording. Built with Bun and [Effect](https://effect.website).
 
 ## Demo
 
@@ -8,28 +8,18 @@ Live dictation for Hyprland. Press **End** to start and again to stop. Your spee
 
 ## Requirements
 
-- Rust
-- `pw-record` (PipeWire), `wtype`, `wl-clipboard`, a notification daemon
-- Hyprland (or another compositor with `wlr-layer-shell`)
-- An API key for a cloud provider, or [uv](https://docs.astral.sh/uv/) for the local models
+- [Bun](https://bun.sh), and [`overlay`](https://github.com/laroccacharly/overlay) built next to this repository
+- `pw-record` (PipeWire), `wtype`, `wl-clipboard`, `ffmpeg`, `notify-send`
+- Hyprland (or another compositor with `wlr-layer-shell`), systemd
+- [uv](https://docs.astral.sh/uv/) for the local model, or an OpenRouter API key
 
 ## Install
 
 ```sh
-cargo install --path .   # installs ~/.cargo/bin/stt
-stt install              # binds End in Hyprland
+(cd ../overlay && bun install && bun run build && bun link)
+bun install && bun link
+stt install
 ```
-
-Remove with `stt uninstall && cargo uninstall stt`. Logs: `$XDG_RUNTIME_DIR/stt/stt.log`.
-
-## Providers
-
-```sh
-stt provider ls          # list providers; * marks the one in use
-stt provider set         # choose one (or: stt provider set <name>)
-```
-
-Each provider reads its key from an environment variable named `<PROVIDER>_API_KEY` (see `.env.example` for the full list). Set it, then run `stt login` to save it in the keyring so the End binding can find it.
 
 ## License
 
