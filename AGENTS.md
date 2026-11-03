@@ -7,7 +7,7 @@ loads `src/cli/main.ts`. The server runs the dictation itself
 (`src/session/dictation.ts`): it records with the overlay, transcribes with the
 current provider, pastes with `wl-copy` + `wtype` into the Wayland display the
 request names, and saves to the SQLite history (`migrations/*.sql`, FLAC
-through ffmpeg). `bun bench/startup.ts` times End to first audio.
+through ffmpeg).
 
 - Providers: `phonon-2.5-en`, a Python server (`python/`) that `stt serve`
   starts through `uv` and reaches over a Unix socket; and `openrouter`, through
