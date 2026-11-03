@@ -11,9 +11,9 @@ const MICROPHONE = String.raw`while :; do printf '\x00\x10\x00\xf0%.0s' $(seq 80
 
 const FAKES: Readonly<Record<string, string>> = {
   "pw-record": MICROPHONE,
-  // The paste keystroke; pasted text is what wl-copy received.
-  wtype: "exit 0",
-  "wl-copy": `cat >> "$STT_TYPED"; printf '|' >> "$STT_TYPED"`,
+  // Like the real wl-copy, exits once a forked holder serves the clipboard; the paste keystroke only gets the text while it lives.
+  "wl-copy": `cat > "$STT_TYPED.clipboard"; sleep 2 </dev/null >/dev/null 2>&1 & echo $! > "$STT_TYPED.holder"`,
+  wtype: `kill -0 "$(cat "$STT_TYPED.holder" 2>/dev/null)" 2>/dev/null && { cat "$STT_TYPED.clipboard" >> "$STT_TYPED"; printf '|' >> "$STT_TYPED"; }; exit 0`,
   "notify-send": `printf '%s: %s\\n' "$4" "$5" >> "$STT_NOTIFIED"`,
   systemctl: `echo "$*" >> "$STT_SYSTEMCTL"; [ "$2" = is-active ] && { echo inactive; exit 3; }; exit 0`,
   hyprctl: "exit 0",

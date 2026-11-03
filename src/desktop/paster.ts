@@ -34,7 +34,13 @@ export class Paster extends Context.Service<
 
       const paste: (text: string) => Effect.Effect<void, PasteError> = Effect.fn("Paster.paste")(function* (text: string) {
         // wl-copy forks a server that keeps the clipboard, so its output is not piped: reading it would wait for that server.
-        const copy = ChildProcess.make("wl-copy", [], { stdin: Stream.make(new TextEncoder().encode(text)), stdout: "ignore", stderr: "ignore" })
+        // Not detached: a detached child's process group is killed once it exits, and with it that server.
+        const copy = ChildProcess.make("wl-copy", [], {
+          stdin: Stream.make(new TextEncoder().encode(text)),
+          stdout: "ignore",
+          stderr: "ignore",
+          detached: false,
+        })
         const copied = yield* spawner.exitCode(copy).pipe(Effect.mapError((cause) => new PasteError({ message: `could not run wl-copy: ${cause.message}` })))
         if (copied !== 0) {
           return yield* new PasteError({ message: `wl-copy exited with ${copied}` })
