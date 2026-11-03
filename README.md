@@ -8,7 +8,7 @@ Speech to text for Hyprland. Press **End** to start dictating and again to stop:
 
 ## Requirements
 
-- [Bun](https://bun.sh), and [`overlay`](https://github.com/laroccacharly/overlay) built next to this repository
+- [Bun](https://bun.sh)
 - `pw-record` (PipeWire), `wtype`, `wl-clipboard`, `ffmpeg`, `notify-send`
 - Hyprland (or another compositor with `wlr-layer-shell`), systemd
 - [uv](https://docs.astral.sh/uv/) for the local model, or an OpenRouter API key
@@ -16,7 +16,6 @@ Speech to text for Hyprland. Press **End** to start dictating and again to stop:
 ## Install
 
 ```sh
-(cd ../overlay && bun install && bun run build && bun link)
 bun install && bun link
 stt service install
 stt install

@@ -1,6 +1,6 @@
 {
   "name": "stt",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "private": true,
   "description": "Speech to text for Hyprland: press End, speak, press End again",
   "license": "MIT",
@@ -20,7 +20,7 @@
     "@effect/platform-bun": "4.1.1",
     "effect": "4.1.1",
     "effect-lib": "github:laroccacharly/effect-lib#v0.18.0",
-    "overlay": "link:overlay"
+    "overlay": "github:laroccacharly/overlay#v0.1.1"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",

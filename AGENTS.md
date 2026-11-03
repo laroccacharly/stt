@@ -13,8 +13,9 @@ with `wl-copy` + `wtype`, and saved to the SQLite history
 - Plumbing comes from `effect-lib` (`github:laroccacharly/effect-lib`):
   `credentials` (OPENROUTER_API_KEY, `stt login`), `systemd`, `json-store`
   (`~/.config/stt/config.json`) and `stt`.
-- The waveform overlay is the `overlay` package (`../overlay`, napi-rs),
-  linked with `bun link`.
+- The waveform overlay is the `overlay` package
+  (`github:laroccacharly/overlay`, napi-rs), installed from a tag that ships
+  the prebuilt native module.
 
 ## After every change
 
