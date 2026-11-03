@@ -1,4 +1,4 @@
-import { Console, Effect, Semaphore } from "effect"
+import { Console, Effect, Option, Semaphore } from "effect"
 import { CredentialsError } from "effect-lib/credentials"
 import * as Systemd from "effect-lib/systemd"
 import { Command, Flag } from "effect/cli"
@@ -8,7 +8,8 @@ import { Phonon } from "../../phonon/phonon.ts"
 import { PROVIDERS, type ProviderName } from "../../provider/provider.ts"
 import { transcriberFor } from "../../provider/transcriber.ts"
 import { startServer } from "../../server/server.ts"
-import { transcribeFile } from "../../session/transcribe-file.ts"
+import { dictate, makeDictations } from "../../session/dictation.ts"
+import { transcribeFile, transcribePcm } from "../../session/transcribe-file.ts"
 
 // A service does not inherit the shell's environment, so a key exported there never reaches it.
 const withLoginHint = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | CredentialsError, R> =>
@@ -31,35 +32,46 @@ export const serverCommand = Command.make("serve", { port: Flag.Int("port").pipe
     const lock = yield* Semaphore.make(1)
     // The provider the previous transcription used, so the local model is unloaded only when it changes.
     let lastProvider: ProviderName | null = null
+
+    // One transcription at a time, with the current provider.
+    const transcribing = <A, E, R>(run: (provider: ProviderName) => Effect.Effect<A, E, R>) =>
+      withLoginHint(
+        Effect.gen(function* () {
+          const provider = yield* currentProvider
+          if (provider !== lastProvider) {
+            // OpenRouter needs no local model, so let go of its memory; keep it while the provider stays.
+            if (provider === "openrouter") yield* (yield* Phonon).stop
+            lastProvider = provider
+          }
+          const text = yield* run(provider)
+          return { text, provider, model: PROVIDERS[provider].model }
+        })
+      ).pipe((effect) => lock.withPermit(effect))
+
+    // Called while the caller is still speaking, so the model loads meanwhile and a missing key is reported early.
+    const prepare = withLoginHint(
+      Effect.gen(function* () {
+        const transcriber = yield* transcriberFor(yield* currentProvider)
+        yield* transcriber.prepare
+      })
+    )
+
+    const dictations = yield* makeDictations((stop, display) =>
+      dictate(stop, display, { prepare, transcribe: (pcm) => transcribing((provider) => transcribePcm(pcm, provider)) })
+    )
+
     const server = startServer(
       {
-        // Called while the caller is still speaking, so the model loads meanwhile and a missing key is reported early.
-        prepare: withLoginHint(
-          Effect.gen(function* () {
-            const transcriber = yield* transcriberFor(yield* currentProvider)
-            yield* transcriber.prepare
-          })
-        ).pipe(Effect.provide(context)),
-        transcribe: (path) =>
-          withLoginHint(
-            Effect.gen(function* () {
-              const provider = yield* currentProvider
-              if (provider !== lastProvider) {
-                // OpenRouter needs no local model, so let go of its memory; keep it while the provider stays.
-                if (provider === "openrouter") yield* (yield* Phonon).stop
-                lastProvider = provider
-              }
-              const text = yield* transcribeFile(path, provider)
-              return { text, provider, model: PROVIDERS[provider].model }
-            })
-          ).pipe((effect) => lock.withPermit(effect), Effect.provide(context)),
+        prepare: prepare.pipe(Effect.provide(context)),
+        transcribe: (path) => transcribing((provider) => transcribeFile(path, provider)).pipe(Effect.provide(context)),
       },
-      port
+      port,
+      Option.some(dictations)
     )
     yield* Effect.logInfo(`stt server listening at ${server.url.href}`)
     return yield* Effect.never.pipe(Effect.ensuring(Effect.promise(() => server.stop())))
-  })
-).pipe(Command.withDescription("Serve the local transcription API on 127.0.0.1"))
+  }).pipe(Effect.scoped)
+).pipe(Command.withDescription("Serve the local transcription API and the End dictation on 127.0.0.1"))
 
 export const SERVER_SERVICE: Systemd.ServiceConfig = {
   name: "stt-server",

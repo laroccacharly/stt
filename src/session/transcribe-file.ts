@@ -6,7 +6,7 @@ import { Ffmpeg, type FfmpegError } from "../audio/ffmpeg.ts"
 import { isOwnWav, splitAtPauses, WAV_HEADER_BYTES } from "../audio/pcm.ts"
 import type { Phonon } from "../phonon/phonon.ts"
 import type { ProviderName } from "../provider/provider.ts"
-import { transcriberFor, type TranscribeError } from "../provider/transcriber.ts"
+import { transcriberFor, type TranscribeError, type Transcriber } from "../provider/transcriber.ts"
 
 // A dictation arrives as the WAV `wav` wrote, so its samples are read as is; anything else goes through ffmpeg.
 const ownWavSamples = (path: string) =>
@@ -25,21 +25,36 @@ const decode = (path: string) =>
 // Files are sent in pieces this long, since the models are built for short dictations.
 const PIECE_MS = 30_000
 
-// The transcript of an audio or video file with the current provider, without the microphone, overlay, pasting or history.
+type TranscribeServices = Phonon | Stt | Keyring
+
+const transcribePieces = (pcm: Uint8Array, transcriber: Transcriber) =>
+  Effect.forEach(splitAtPauses(pcm, PIECE_MS), transcriber.transcribe).pipe(
+    Effect.map((texts) =>
+      texts
+        .map((text) => text.trim())
+        .filter((text) => text !== "")
+        .join(" ")
+    )
+  )
+
+// The transcript of PCM at SAMPLE_RATE, such as a dictation, with `provider`.
+export const transcribePcm: (pcm: Uint8Array, provider: ProviderName) => Effect.Effect<string, TranscribeError, TranscribeServices> = Effect.fn(
+  "transcribePcm"
+)(function* (pcm: Uint8Array, provider: ProviderName) {
+  const transcriber = yield* transcriberFor(provider)
+  yield* transcriber.prepare
+  return yield* transcribePieces(pcm, transcriber)
+})
+
+// The transcript of an audio or video file with `provider`, without the microphone, overlay, pasting or history.
 export const transcribeFile: (
   path: string,
   provider: ProviderName
-) => Effect.Effect<string, TranscribeError | FfmpegError | JsonStoreError, Ffmpeg | Phonon | Stt | Keyring | FileSystem.FileSystem> = Effect.fn(
-  "transcribeFile"
-)(function* (path: string, provider: ProviderName) {
-  // The server unloads the local model when the provider changes to OpenRouter.
-  const transcriber = yield* transcriberFor(provider)
-  // Before decoding, so the local model loads meanwhile.
-  yield* transcriber.prepare
-  const pcm = yield* decode(path)
-  const texts = yield* Effect.forEach(splitAtPauses(pcm, PIECE_MS), transcriber.transcribe)
-  return texts
-    .map((text) => text.trim())
-    .filter((text) => text !== "")
-    .join(" ")
-})
+) => Effect.Effect<string, TranscribeError | FfmpegError | JsonStoreError, Ffmpeg | TranscribeServices | FileSystem.FileSystem> = Effect.fn("transcribeFile")(
+  function* (path: string, provider: ProviderName) {
+    const transcriber = yield* transcriberFor(provider)
+    // Before decoding, so the local model loads meanwhile.
+    yield* transcriber.prepare
+    return yield* transcribePieces(yield* decode(path), transcriber)
+  }
+)

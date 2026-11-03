@@ -1,8 +1,6 @@
 import { Context, Effect, Layer } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-
-// Notifications share one id so each replaces the previous.
-const NOTIFICATION_ID = "47511"
+import { NOTIFICATION_ID } from "./notification-id.ts"
 
 // Desktop notifications through notify-send. Failing to notify is logged, never raised.
 export class Notifier extends Context.Service<
@@ -32,6 +30,6 @@ export class Notifier extends Context.Service<
   )
 }
 
-// Notifies an error before failing with it: the End binding and the background recorder have no terminal.
+// Notifies an error before failing with it: neither the End binding nor stt-server has a terminal.
 export const notifyingErrors = <A, E extends { readonly message: string }, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | Notifier> =>
   effect.pipe(Effect.tapError((error) => Notifier.use((notifier) => notifier.notify("STT error", error.message))))

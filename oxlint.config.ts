@@ -3,6 +3,8 @@ import tsLint from "ts-lint/config"
 
 export default defineConfig({
   extends: [tsLint],
+  // Throwaway measurement scripts, run with bun directly.
+  ignorePatterns: ["bench/**"],
   options: {
     typeAware: true,
     typeCheck: true,

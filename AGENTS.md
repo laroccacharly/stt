@@ -1,10 +1,13 @@
 # Agent notes
 
 stt is a Bun + Effect CLI (`src/cli/index.ts`, linked as `stt` with `bun link`).
-`stt toggle` (the End key) starts `stt record` in the background, or stops it
-with SIGUSR2; the recording is transcribed by the current provider, pasted
-with `wl-copy` + `wtype`, and saved to the SQLite history
-(`migrations/*.sql`, FLAC through ffmpeg).
+`stt toggle` (the End key) is a tiny entry point (`src/cli/toggle.ts`, no
+Effect) that POSTs `/v1/dictation/toggle` to `stt-server`; every other command
+loads `src/cli/main.ts`. The server runs the dictation itself
+(`src/session/dictation.ts`): it records with the overlay, transcribes with the
+current provider, pastes with `wl-copy` + `wtype` into the Wayland display the
+request names, and saves to the SQLite history (`migrations/*.sql`, FLAC
+through ffmpeg). `bun bench/startup.ts` times End to first audio.
 
 - Providers: `phonon-2.5-en`, a Python server (`python/`) that `stt serve`
   starts through `uv` and reaches over a Unix socket; and `openrouter`, through
@@ -24,8 +27,9 @@ with `wl-copy` + `wtype`, and saved to the SQLite history
    API changes, `bun run test:live`.
 3. `bun run typecheck` and `bun run lint` must print no errors or warnings.
 4. A change to the server (`src/server/`, `src/phonon/`, `python/`) needs
-   `stt service reinstall` to restart `stt-server`. Everything else is live at
-   the next End press, since `stt` runs from this checkout.
+   `stt service reinstall` to restart `stt-server`; so does a change to
+   dictation (`src/session/`, `src/audio/`, `src/desktop/`, `src/history/`),
+   which runs in the server. The CLI runs from this checkout.
 
 # Learning more about Effect
 

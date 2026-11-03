@@ -1,21 +1,24 @@
 import { Console, Effect, Schema } from "effect"
 import { Argument, Command } from "effect/cli"
 import { SttClient } from "../../../client/index.ts"
-import { notifyingErrors } from "../../desktop/notifier.ts"
-import { record } from "../../session/record.ts"
-import { toggle } from "../../session/toggle.ts"
+import { toggle } from "../toggle.ts"
 
 class ReadFileError extends Schema.TaggedError<ReadFileError>()("ReadFileError", {
   message: Schema.String,
 }) {}
 
-export const toggleDictation = notifyingErrors(toggle)
-
-export const toggleCommand = Command.make("toggle", {}, () => toggleDictation).pipe(
-  Command.withDescription("Start dictation, or stop it if it is running (default)")
+// `stt` and `stt toggle` normally skip the CLI (see index.ts); this runs for `stt toggle` with flags.
+export const toggleDictation = Effect.promise(toggle).pipe(
+  Effect.flatMap((code) =>
+    Effect.sync(() => {
+      process.exitCode = code
+    })
+  )
 )
 
-export const recordCommand = Command.make("record", {}, () => record).pipe(Command.withDescription("Run a dictation in the foreground until SIGUSR2"))
+export const toggleCommand = Command.make("toggle", {}, () => toggleDictation).pipe(
+  Command.withDescription("Ask stt-server to start dictation, or stop it if it is running (default)")
+)
 
 export const transcribeCommand = Command.make("transcribe", { file: Argument.Path("file", { pathType: "file", mustExist: true }) }, ({ file }) =>
   Effect.gen(function* () {

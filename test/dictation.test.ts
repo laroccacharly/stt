@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
-import { existsSync, rmSync, writeFileSync } from "node:fs"
+import { writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:net"
 import { savedDictations } from "./history.ts"
-import { CLI, fakeOpenRouter, KEY, Sandbox } from "./sandbox.ts"
+import { fakeOpenRouter, KEY, Sandbox } from "./sandbox.ts"
 
 // A sandbox using a fake OpenRouter; dispose of both with `using`.
 const openRouterSandbox = async (status: number, reply: object) => {
@@ -69,7 +69,7 @@ test.concurrent("the microphone dying is notified", async () => {
   sandbox.script("pw-record", String.raw`printf '\x00\x10%.0s' $(seq 1600)`)
 
   expect((await sandbox.stt("toggle")).code).toBe(0)
-  await sandbox.recorderExit()
+  await sandbox.dictationDone()
 
   expect(sandbox.read("notified")).toContain("STT error: Microphone stopped unexpectedly (pw-record exited)")
 })
@@ -83,24 +83,6 @@ test.concurrent("a paste failure is notified and the dictation still saved", asy
 
   expect(sandbox.read("notified")).toContain("STT typing failed: Compositor does not support the virtual keyboard protocol")
   expect(savedDictations(sandbox).map((saved) => saved.transcript)).toEqual(["hello"])
-})
-
-test.concurrent("a transcript missing its provider and model is pasted, and only the history fails", async () => {
-  const server = Bun.serve({
-    port: 0,
-    fetch: async (request) => {
-      await request.arrayBuffer()
-      return Response.json({ text: "hello" })
-    },
-  })
-  using _fake = { [Symbol.dispose]: () => void server.stop(true) }
-  using sandbox = new Sandbox({ STT_SERVER_URL: server.url.origin })
-
-  await sandbox.dictate()
-
-  expect(sandbox.read("typed")).toBe("hello|")
-  expect(savedDictations(sandbox)).toHaveLength(0)
-  expect(sandbox.read("notified")).toContain("STT history failed: Server did not report the transcription provider")
 })
 
 test.concurrent("stt transcribe sends the file's real MIME type", async () => {
@@ -126,34 +108,62 @@ test.concurrent("stt transcribe sends the file's real MIME type", async () => {
   expect(Bun.file(file).type).toBe("audio/x-wav")
 })
 
-test.concurrent("a stale PID file does not block a new dictation", async () => {
-  using fixture = await openRouterSandbox(200, { text: "fresh" })
-  const { sandbox } = fixture
-  writeFileSync(sandbox.pidFile, String(process.pid))
+test.concurrent("toggle without the server notifies how to start it", async () => {
+  using sandbox = new Sandbox({ STT_SERVER_URL: "http://127.0.0.1:9" })
 
-  await sandbox.dictate()
+  const toggled = await sandbox.stt("toggle")
 
-  expect(sandbox.read("typed")).toBe("fresh|")
+  expect(toggled.code).toBe(1)
+  expect(sandbox.read("notified")).toBe("STT error: stt-server is not reachable at http://127.0.0.1:9; start it with `stt service install`\n")
 })
 
-test.concurrent("stt record works on its own, with no runtime directory yet", async () => {
-  using fixture = await openRouterSandbox(200, { text: "direct" })
-  const { sandbox } = fixture
-  rmSync(sandbox.path("runtime", "stt"), { recursive: true, force: true })
+test.concurrent("End while transcribing does nothing, and the next press starts a new dictation", async () => {
+  using fixture = await openRouterSandbox(200, { text: "again" })
+  const { sandbox, server } = fixture
+  // A slow paste keeps the dictation busy when End is pressed again.
+  sandbox.script("wtype", `sleep 0.5; cat "$STT_TYPED.clipboard" >> "$STT_TYPED"; printf '|' >> "$STT_TYPED"`)
 
-  const recorder = Bun.spawn(["bun", CLI, "record"], { env: sandbox.env, stdout: "pipe", stderr: "pipe" })
-  const deadline = Date.now() + 5000
-  while (!existsSync(sandbox.pidFile)) {
-    if (Date.now() > deadline) {
-      throw new Error(`record did not claim the PID file:\n${sandbox.read("runtime/stt/stt.log")}`)
-    }
-    await Bun.sleep(25)
-  }
+  expect((await sandbox.stt("toggle")).code).toBe(0)
+  expect(await sandbox.dictationState()).toBe("recording")
   await Bun.sleep(300)
-  process.kill(recorder.pid, "SIGUSR2")
-  await recorder.exited
+  expect((await sandbox.stt("toggle")).code).toBe(0)
+  expect((await sandbox.stt("toggle")).code).toBe(0)
+  expect(await sandbox.dictationState()).toBe("transcribing")
+  await sandbox.dictationDone()
+  await sandbox.dictate()
 
-  expect(sandbox.read("typed")).toBe("direct|")
+  expect(sandbox.read("typed")).toBe("again|again|")
+  expect(server.requests).toHaveLength(2)
+})
+
+test.concurrent("cancel drops the recording without transcribing, pasting or saving it", async () => {
+  using fixture = await openRouterSandbox(200, { text: "unwanted" })
+  const { sandbox, server } = fixture
+
+  expect((await sandbox.stt("toggle")).code).toBe(0)
+  await Bun.sleep(300)
+  const cancelled = await fetch(new URL("/v1/dictation/cancel", sandbox.env["STT_SERVER_URL"]), { method: "POST" })
+
+  expect(await cancelled.json()).toEqual({ state: "idle" })
+  expect(server.requests).toHaveLength(0)
+  expect(sandbox.read("typed")).toBe("")
+  expect(savedDictations(sandbox)).toHaveLength(0)
+  expect(sandbox.read("notified")).toBe("")
+})
+
+test.concurrent("a web page cannot toggle or cancel the dictation", async () => {
+  using fixture = await openRouterSandbox(200, { text: "unwanted" })
+  const { sandbox } = fixture
+
+  for (const path of ["/v1/dictation/toggle", "/v1/dictation/cancel"]) {
+    const response = await fetch(new URL(path, sandbox.env["STT_SERVER_URL"]), {
+      method: "POST",
+      headers: { origin: "https://evil.example", "content-type": "text/plain" },
+      body: "{}",
+    })
+    expect(response.status).toBe(403)
+  }
+  expect(await sandbox.dictationState()).toBe("idle")
 })
 
 // A fake phonon server on the socket stt expects, speaking python/serve.py's protocol.

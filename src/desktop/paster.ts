@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 export class PasteError extends Schema.TaggedError<PasteError>()("PasteError", {
@@ -12,7 +12,8 @@ const SHIFT_INSERT = ["-M", "shift", "-k", "Insert", "-m", "shift"]
 export class Paster extends Context.Service<
   Paster,
   {
-    readonly paste: (text: string) => Effect.Effect<void, PasteError>
+    // `display` is the Wayland socket of the session to paste into, when it is not this process's own.
+    readonly paste: (text: string, display: Option.Option<string>) => Effect.Effect<void, PasteError>
   }
 >()("stt/desktop/Paster") {
   static readonly layer = Layer.effect(
@@ -32,7 +33,11 @@ export class Paster extends Context.Service<
         }
       })
 
-      const paste: (text: string) => Effect.Effect<void, PasteError> = Effect.fn("Paster.paste")(function* (text: string) {
+      const paste: (text: string, display: Option.Option<string>) => Effect.Effect<void, PasteError> = Effect.fn("Paster.paste")(function* (
+        text: string,
+        display: Option.Option<string>
+      ) {
+        const env = Option.match(display, { onNone: () => ({}), onSome: (name) => ({ env: { WAYLAND_DISPLAY: name }, extendEnv: true }) })
         // wl-copy forks a server that keeps the clipboard, so its output is not piped: reading it would wait for that server.
         // Not detached: a detached child's process group is killed once it exits, and with it that server.
         const copy = ChildProcess.make("wl-copy", [], {
@@ -40,12 +45,13 @@ export class Paster extends Context.Service<
           stdout: "ignore",
           stderr: "ignore",
           detached: false,
+          ...env,
         })
         const copied = yield* spawner.exitCode(copy).pipe(Effect.mapError((cause) => new PasteError({ message: `could not run wl-copy: ${cause.message}` })))
         if (copied !== 0) {
           return yield* new PasteError({ message: `wl-copy exited with ${copied}` })
         }
-        yield* run(ChildProcess.make("wtype", SHIFT_INSERT, { stdin: "ignore", stdout: "ignore", stderr: "pipe" }), "wtype")
+        yield* run(ChildProcess.make("wtype", SHIFT_INSERT, { stdin: "ignore", stdout: "ignore", stderr: "pipe", ...env }), "wtype")
       })
       return Paster.of({ paste })
     })

@@ -108,11 +108,14 @@ export class Sandbox {
     return { code, stdout, stderr }
   }
 
-  get pidFile(): string {
-    return this.path("runtime", "stt", "recording.pid")
+  // What the server's dictation is doing: idle, recording or transcribing.
+  async dictationState(): Promise<string> {
+    const response = await fetch(new URL("/v1/dictation", this.env["STT_SERVER_URL"]))
+    const { state } = (await response.json()) as { state: string }
+    return state
   }
 
-  // Starts a dictation, lets it record for `ms`, stops it and waits for the recorder to finish.
+  // Starts a dictation, lets it record for `ms`, stops it and waits until it is transcribed, pasted and saved.
   async dictate(ms = 400): Promise<void> {
     const started = await this.stt("toggle")
     if (started.code !== 0) {
@@ -120,14 +123,14 @@ export class Sandbox {
     }
     await Bun.sleep(ms)
     await this.stt("toggle")
-    await this.recorderExit()
+    await this.dictationDone()
   }
 
-  async recorderExit(timeoutMs = 8000): Promise<void> {
+  async dictationDone(timeoutMs = 8000): Promise<void> {
     const deadline = Date.now() + timeoutMs
-    while (existsSync(this.pidFile)) {
+    while ((await this.dictationState()) !== "idle") {
       if (Date.now() > deadline) {
-        throw new Error(`the recorder did not finish:\n${this.read("runtime/stt/stt.log")}`)
+        throw new Error("the dictation did not finish")
       }
       await Bun.sleep(25)
     }

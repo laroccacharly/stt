@@ -1,8 +1,9 @@
 import { mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Cause, Effect } from "effect"
+import { Cause, Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
+import type { DictationState } from "../session/dictation.ts"
 
 // Long videos go through here, so the body is streamed to disk instead of held in memory.
 const MAX_BYTES = 512 * 1024 * 1024
@@ -24,6 +25,17 @@ export interface TranscriptionApi {
   // The transcript of the audio or video file at `path`, with the provider that made it.
   readonly transcribe: (path: string) => Effect.Effect<Transcript, ApiFailure>
 }
+
+// The dictation End toggles, which the server runs so a key press does not wait for a process to start.
+export interface DictationApi {
+  // `display` is the Wayland socket of the session that pressed End.
+  readonly toggle: (display: Option.Option<string>) => Effect.Effect<DictationState>
+  // Drops the dictation without pasting or saving it.
+  readonly cancel: Effect.Effect<DictationState>
+  readonly state: Effect.Effect<DictationState>
+}
+
+const ToggleRequest = Schema.Struct({ display: Schema.optional(Schema.String) })
 
 const json = (body: object, status = 200) => HttpServerResponse.fromWeb(Response.json(body, { status }))
 
@@ -67,7 +79,41 @@ const transcribeRoute = (api: TranscriptionApi) =>
     )
   })
 
-const routes = (api: TranscriptionApi) => [
+// A browser sends Origin with every cross-origin POST, and a simple one skips the CORS preflight; stt toggle never sends it.
+// Refusing it keeps a web page from turning the microphone on.
+const fromCli =
+  (handler: (request: HttpServerRequest.HttpServerRequest) => Effect.Effect<HttpServerResponse.HttpServerResponse>) =>
+  (request: HttpServerRequest.HttpServerRequest) => {
+    if (request.headers["origin"] !== undefined) {
+      return Effect.succeed(json({ message: "Cross-origin requests are not allowed" }, 403))
+    }
+    return handler(request)
+  }
+
+const dictationRoutes = (dictation: DictationApi) => [
+  HttpRouter.route("GET", "/v1/dictation", dictation.state.pipe(Effect.map((state) => json({ state })))),
+  HttpRouter.route(
+    "POST",
+    "/v1/dictation/cancel",
+    fromCli(() => dictation.cancel.pipe(Effect.map((state) => json({ state }))))
+  ),
+  HttpRouter.route(
+    "POST",
+    "/v1/dictation/toggle",
+    fromCli((request) =>
+      request.json.pipe(
+        Effect.orElseSucceed(() => ({})),
+        Effect.flatMap(Schema.decodeUnknownEffect(ToggleRequest)),
+        Effect.flatMap(({ display }) => dictation.toggle(Option.fromUndefinedOr(display))),
+        Effect.map((state) => json({ state })),
+        Effect.orElseSucceed(() => json({ message: 'Expected {"display"?: string}' }, 400))
+      )
+    )
+  ),
+]
+
+const routes = (api: TranscriptionApi, dictation: Option.Option<DictationApi>) => [
+  ...Option.match(dictation, { onNone: () => [], onSome: dictationRoutes }),
   HttpRouter.route("GET", "/health", Effect.succeed(json({ ok: true }))),
   HttpRouter.route("POST", "/v1/prepare", answered(api.prepare.pipe(Effect.as(json({}))))),
   transcribeRoute(api),
@@ -75,8 +121,8 @@ const routes = (api: TranscriptionApi) => [
 ]
 
 // The transcription API on 127.0.0.1; `stop` closes the listener and the router's runtime.
-export const startServer = (api: TranscriptionApi, port = 4318) => {
-  const http = HttpRouter.toWebHandler(HttpRouter.addAll(routes(api)), { disableLogger: true })
+export const startServer = (api: TranscriptionApi, port = 4318, dictation: Option.Option<DictationApi> = Option.none()) => {
+  const http = HttpRouter.toWebHandler(HttpRouter.addAll(routes(api, dictation)), { disableLogger: true })
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port,
