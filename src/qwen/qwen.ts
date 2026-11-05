@@ -36,7 +36,7 @@ export const parseReply = (reply: string): Effect.Effect<string, QwenError> =>
     })
   )
 
-// Qwen3-ASR on CPU, served through a Unix socket.
+// Qwen3-ASR on an NVIDIA GPU, served through a Unix socket.
 export class Qwen extends Context.Service<
   Qwen,
   {

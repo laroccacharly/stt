@@ -11,7 +11,7 @@ export interface ProviderInfo {
 
 export const PROVIDERS: Readonly<Record<ProviderName, ProviderInfo>> = {
   "phonon-2.5-en": { label: "Phonon-2.5 English (local)", model: "FermionResearch/Phonon-2.5-English" },
-  "qwen3-asr-1.7b": { label: "Qwen3-ASR 1.7B (local CPU)", model: "Qwen/Qwen3-ASR-1.7B" },
+  "qwen3-asr-1.7b": { label: "Qwen3-ASR 1.7B (local GPU)", model: "Qwen/Qwen3-ASR-1.7B" },
   openrouter: { label: "OpenRouter (MAI-Transcribe 2)", model: "microsoft/mai-transcribe-2" },
 }
 

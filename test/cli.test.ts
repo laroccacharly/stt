@@ -11,7 +11,7 @@ test.concurrent("provider set is remembered and listed, and phonon defaults", as
   using sandbox = new Sandbox()
   expect(await providerLines(sandbox)).toEqual([
     "* phonon-2.5-en   Phonon-2.5 English (local)",
-    "  qwen3-asr-1.7b  Qwen3-ASR 1.7B (local CPU)",
+    "  qwen3-asr-1.7b  Qwen3-ASR 1.7B (local GPU)",
     "  openrouter      OpenRouter (MAI-Transcribe 2)",
   ])
 

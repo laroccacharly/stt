@@ -1,6 +1,7 @@
-import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { Effect, Layer, Logger } from "effect"
+import { BunServices } from "@effect/platform-bun"
+import { Layer, Logger } from "effect"
 import * as Credentials from "effect-lib/credentials"
+import * as FileLogger from "effect-lib/logger"
 import { ApiKey } from "effect-lib/stt"
 import { Command } from "effect/cli"
 import { SttClient } from "../../client/index.ts"
@@ -26,6 +27,7 @@ const secrets = Credentials.make([ApiKey])
 const stt = Command.make("stt", {}, () => toggleDictation).pipe(
   Command.withDescription("Speech to text for Hyprland; with no command, toggles dictation"),
   Command.withSubcommands([
+    FileLogger.logsCommand({ name: "stt" }),
     toggleCommand,
     transcribeCommand,
     providerCommand,
@@ -56,4 +58,4 @@ const AppLive = Layer.mergeAll(
   Layer.provideMerge(BunServices.layer)
 )
 
-BunRuntime.runMain(Command.run(stt, { version: packageJson.version }).pipe(Effect.provide(AppLive)))
+FileLogger.runMain(Command.run(stt, { version: packageJson.version }), { logger: { name: "stt" }, services: AppLive })

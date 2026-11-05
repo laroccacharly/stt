@@ -1,8 +1,10 @@
 # /// script
 # requires-python = "==3.12.*"
-# dependencies = ["huggingface-hub==2.4.0", "onnxruntime==1.31.1", "numpy", "tokenizers"]
+# dependencies = ["huggingface-hub==2.4.0", "onnxruntime-gpu[cuda,cudnn]==1.31.1", "numpy", "tokenizers"]
 # ///
-"""Qwen3-ASR ONNX CPU server for stt (see serve.py)."""
+"""Qwen3-ASR ONNX server for stt on an NVIDIA GPU (see serve.py)."""
+
+from concurrent.futures import ThreadPoolExecutor
 
 import json
 import sys
@@ -22,10 +24,15 @@ if "--prepare" in sys.argv:
 
 from serve import serve
 
-providers = ["CPUExecutionProvider"]
-encoder = ort.InferenceSession(str(model_dir / "encoder.fp32.onnx"), providers=providers)
-init = ort.InferenceSession(str(model_dir / "decoder_init.int4.onnx"), providers=providers)
-step = ort.InferenceSession(str(model_dir / "decoder_step.int4.onnx"), providers=providers)
+# The CUDA and cuDNN libraries come from the nvidia wheels the [cuda,cudnn] extras install.
+ort.preload_dlls()
+# The default arena doubles each time it grows, which runs an 8 GB card out of memory.
+providers = [("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"}), "CPUExecutionProvider"]
+encoder = ort.InferenceSession(str(model_dir / "encoder.fp32.onnx"), providers=["CPUExecutionProvider"])
+init = ort.InferenceSession(str(model_dir / "decoder_init.int4.onnx"), providers=["CPUExecutionProvider"])
+session_options = ort.SessionOptions()
+session_options.enable_mem_pattern = False
+step = ort.InferenceSession(str(model_dir / "decoder_step.int4.onnx"), sess_options=session_options, providers=providers)
 config = json.loads((model_dir / "config.json").read_text())
 embeddings = np.fromfile(model_dir / "embed_tokens.bin", np.float16).reshape(-1, config["decoder"]["hidden_size"])
 tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
@@ -43,10 +50,15 @@ def log_mel(audio):
 
 
 def transcribe(pcm):
+    # Bound decoder context and CUDA allocations for long recordings.
+    if len(pcm) > 256000:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return " ".join(pool.map(transcribe, (pcm[i:i + 256000] for i in range(0, len(pcm), 256000))))
     audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
     if len(audio) < 400:
         return ""
-    features = encoder.run(["audio_features"], {"mel": log_mel(audio)})[0]
+    mel = log_mel(audio)
+    features = np.concatenate([encoder.run(["audio_features"], {"mel": mel[:, :, i:i + 800]})[0] for i in range(0, mel.shape[2], 800)], axis=1)
     prompt = [151644, 8948, 198, 151645, 198, 151644, 872, 198, 151669] + [151676] * features.shape[1] + [151670, 151645, 198, 151644, 77091, 198]
     position = len(prompt)
     logits, keys, values = init.run(None, {"input_ids": np.array([prompt], np.int64), "position_ids": np.arange(position, dtype=np.int64)[None], "audio_features": features, "audio_offset": np.array([prompt.index(151676)], np.int64)})
@@ -63,4 +75,6 @@ def transcribe(pcm):
     return tokenizer.decode(output).split("<asr_text>")[-1].strip()
 
 
+# The first run on the GPU is slow, so it happens before the socket accepts a dictation.
+transcribe(bytes(32000))
 serve(transcribe)
