@@ -12,6 +12,7 @@ import { Paster } from "../desktop/paster.ts"
 import { History } from "../history/history.ts"
 import { Phonon } from "../phonon/phonon.ts"
 import { openRouterLayer } from "../provider/openrouter.ts"
+import { Qwen } from "../qwen/qwen.ts"
 import { toggleCommand, toggleDictation, transcribeCommand } from "./commands/dictation.ts"
 import { historyCommand } from "./commands/history.ts"
 import { installCommand, uninstallCommand } from "./commands/hyprland.ts"
@@ -46,6 +47,7 @@ const AppLive = Layer.mergeAll(
   Notifier.layer,
   Paster.layer,
   Phonon.layer,
+  Qwen.layer,
   openRouterLayer,
   Layer.succeed(Logger.LogToStderr, true)
 ).pipe(

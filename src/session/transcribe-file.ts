@@ -7,6 +7,7 @@ import { isOwnWav, splitAtPauses, WAV_HEADER_BYTES } from "../audio/pcm.ts"
 import type { Phonon } from "../phonon/phonon.ts"
 import type { ProviderName } from "../provider/provider.ts"
 import { transcriberFor, type TranscribeError, type Transcriber } from "../provider/transcriber.ts"
+import type { Qwen } from "../qwen/qwen.ts"
 
 // A dictation arrives as the WAV `wav` wrote, so its samples are read as is; anything else goes through ffmpeg.
 const ownWavSamples = (path: string) =>
@@ -25,7 +26,7 @@ const decode = (path: string) =>
 // Files are sent in pieces this long, since the models are built for short dictations.
 const PIECE_MS = 30_000
 
-type TranscribeServices = Phonon | Stt | Keyring
+type TranscribeServices = Phonon | Qwen | Stt | Keyring
 
 const transcribePieces = (pcm: Uint8Array, transcriber: Transcriber) =>
   Effect.forEach(splitAtPauses(pcm, PIECE_MS), transcriber.transcribe).pipe(

@@ -3,6 +3,7 @@ import { Argument, Command, Prompt } from "effect/cli"
 import { currentProvider, saveProvider } from "../../config/config.ts"
 import { Phonon } from "../../phonon/phonon.ts"
 import { PROVIDERS, ProviderName } from "../../provider/provider.ts"
+import { Qwen } from "../../qwen/qwen.ts"
 
 const NAMES = ProviderName.literals
 const NAME_WIDTH = Math.max(...NAMES.map((name) => name.length))
@@ -35,6 +36,7 @@ const switchTo = Effect.fnUntraced(function* (provider: ProviderName) {
     // Downloads the model and its dependencies now, where their progress shows, rather than during a dictation.
     yield* (yield* Phonon).prepare
   }
+  if (provider === "qwen3-asr-1.7b") yield* (yield* Qwen).prepare
   yield* saveProvider(provider)
   yield* Console.log(`Using ${PROVIDERS[provider].label}`)
 })

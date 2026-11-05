@@ -25,12 +25,11 @@ const migrate = (database: Database) => {
   const applied = Schema.decodeUnknownSync(UserVersion)(database.query("PRAGMA user_version").get()).user_version
   migrations().forEach((sql, index) => {
     const version = index + 1
-    if (version > applied) {
-      database.transaction(() => {
-        database.run(sql)
-        database.run(`PRAGMA user_version = ${version}`)
-      })()
-    }
+    if (version <= applied) return
+    database.transaction(() => {
+      database.run(sql)
+      database.run(`PRAGMA user_version = ${version}`)
+    })()
   })
 }
 

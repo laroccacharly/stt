@@ -156,6 +156,25 @@ test("a client leaves a model another server owns alone", async () => {
   }
 })
 
+test("preparing another provider releases the previous local model", async () => {
+  using sandbox = new Sandbox()
+  const config = sandbox.path("config", "stt", "config.json")
+  await sandbox.stt("provider", "set", "qwen3-asr-1.7b")
+  const model = Bun.spawn(["sleep", "60"], { detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+  const listener = Bun.listen({ unix: sandbox.path("runtime", "stt", "qwen.sock"), socket: { data() {} } })
+  writeFileSync(sandbox.path("runtime", "stt", "qwen.pid"), JSON.stringify({ model: model.pid, server: 2_147_483_647 }))
+  const url = await sandbox.startServer()
+  try {
+    expect((await fetch(`${url}/v1/prepare`, { method: "POST" })).status).toBe(200)
+    writeFileSync(config, JSON.stringify({ provider: "phonon-2.5-en" }))
+    expect((await fetch(`${url}/v1/prepare`, { method: "POST" })).status).toBe(200)
+    expect(await Promise.race([model.exited.then(() => true), Bun.sleep(3_000).then(() => false)])).toBe(true)
+  } finally {
+    listener.stop(true)
+    model.kill()
+  }
+})
+
 test("an adopted model is owned by the adopting server", async () => {
   using sandbox = new Sandbox()
   // A model an earlier server left behind: listening on the socket, owned by a server that is gone.

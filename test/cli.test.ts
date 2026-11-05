@@ -9,12 +9,16 @@ const providerLines = async (sandbox: Sandbox) => (await sandbox.stt("provider",
 
 test.concurrent("provider set is remembered and listed, and phonon defaults", async () => {
   using sandbox = new Sandbox()
-  expect(await providerLines(sandbox)).toEqual(["* phonon-2.5-en  Phonon-2.5 English (local)", "  openrouter     OpenRouter (MAI-Transcribe 2)"])
+  expect(await providerLines(sandbox)).toEqual([
+    "* phonon-2.5-en   Phonon-2.5 English (local)",
+    "  qwen3-asr-1.7b  Qwen3-ASR 1.7B (local CPU)",
+    "  openrouter      OpenRouter (MAI-Transcribe 2)",
+  ])
 
   const set = await sandbox.stt("provider", "set", "openrouter")
 
   expect(set.stdout).toBe("Using OpenRouter (MAI-Transcribe 2)\n")
-  expect((await providerLines(sandbox))[1]).toStartWith("* openrouter")
+  expect((await providerLines(sandbox))[2]).toStartWith("* openrouter")
   expect(JSON.parse(sandbox.read("config/stt/config.json"))).toEqual({ provider: "openrouter" })
 })
 
@@ -33,6 +37,13 @@ test.concurrent("choosing phonon downloads the model, then providers only update
   expect(sandbox.read("uv")).toBe(`run --quiet --script ${sandbox.path("cache", "stt", "phonon.py")} --prepare\n`)
   expect((await sandbox.stt("provider", "set", "openrouter")).code).toBe(0)
   expect(sandbox.read("systemctl")).toBe("")
+})
+
+test.concurrent("choosing Qwen prepares its model and saves the provider", async () => {
+  using sandbox = new Sandbox()
+  expect((await sandbox.stt("provider", "set", "qwen3-asr-1.7b")).code).toBe(0)
+  expect(sandbox.read("uv")).toBe(`run --quiet --script ${sandbox.path("cache", "stt", "qwen.py")} --prepare\n`)
+  expect(JSON.parse(sandbox.read("config/stt/config.json"))).toEqual({ provider: "qwen3-asr-1.7b" })
 })
 
 test.concurrent("transcribe prints a file's transcript without pasting or saving it", async () => {

@@ -57,6 +57,27 @@ live(
 )
 
 live(
+  "qwen transcribes real speech",
+  async () => {
+    using sandbox = new Sandbox({ HOME: homedir(), XDG_CACHE_HOME: process.env["XDG_CACHE_HOME"] ?? join(homedir(), ".cache") })
+    rmSync(join(sandbox.bin, "uv"))
+    const set = await sandbox.stt("provider", "set", "qwen3-asr-1.7b")
+    expect(set.code).toBe(0)
+    await sandbox.startServer()
+    try {
+      for (const [fixture, expected] of Object.entries(SPEECH)) {
+        const transcribed = await sandbox.stt("transcribe", wavOf(sandbox, fixture))
+        expect(transcribed.code).toBe(0)
+        expect(words(transcribed.stdout)).toBe(expected)
+      }
+    } finally {
+      await sandbox.stopServer()
+    }
+  },
+  360_000
+)
+
+live(
   "OpenRouter transcribes real speech with the key from the keyring",
   async () => {
     using sandbox = new Sandbox()

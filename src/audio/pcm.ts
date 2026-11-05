@@ -3,9 +3,7 @@ export const SAMPLE_RATE = 16_000
 
 const bytesIn = (milliseconds: number) => Math.floor((milliseconds * SAMPLE_RATE) / 1000) * 2
 
-// 20 ms, the steps in which splitAtPauses measures loudness.
 const FRAME_BYTES = bytesIn(20)
-// splitAtPauses looks for a pause this far back from each cut.
 const PAUSE_SEARCH_MS = 5000
 
 const samplesOf = (pcm: Uint8Array) => new Int16Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + (pcm.byteLength & ~1)))
@@ -21,7 +19,6 @@ export const level = (chunk: Uint8Array): number => {
   return Math.min(Math.sqrt(rms) * 2.2, 1)
 }
 
-// Offset of the quietest whole 20 ms frame in `window`.
 const quietestFrameStart = (window: Uint8Array) => {
   let quietest = { start: 0, energy: Number.POSITIVE_INFINITY }
   for (let start = 0; start + FRAME_BYTES <= window.length; start += FRAME_BYTES) {
@@ -33,15 +30,19 @@ const quietestFrameStart = (window: Uint8Array) => {
   return quietest.start
 }
 
-// Splits PCM into pieces of at most `maxMilliseconds`, each ending in the quietest 20 ms of its last 5 s, so cuts fall between words.
+const pauseCut = (pcm: Uint8Array, maxBytes: number, searchBytes: number) => {
+  const windowStart = maxBytes - searchBytes
+  return (windowStart + quietestFrameStart(pcm.subarray(windowStart, maxBytes)) + FRAME_BYTES / 2) & ~1
+}
+
+// Cutting at a quiet frame helps avoid splitting words.
 export const splitAtPauses = (pcm: Uint8Array, maxMilliseconds: number): ReadonlyArray<Uint8Array> => {
   const maxBytes = Math.max(bytesIn(maxMilliseconds), FRAME_BYTES)
   const searchBytes = Math.min(bytesIn(PAUSE_SEARCH_MS), Math.floor(maxBytes / 2))
   const pieces: Uint8Array[] = []
   let rest = pcm
   while (rest.length > maxBytes) {
-    const windowStart = maxBytes - searchBytes
-    const cut = (windowStart + quietestFrameStart(rest.subarray(windowStart, maxBytes)) + FRAME_BYTES / 2) & ~1
+    const cut = pauseCut(rest, maxBytes, searchBytes)
     pieces.push(rest.subarray(0, cut))
     rest = rest.subarray(cut)
   }
@@ -51,7 +52,6 @@ export const splitAtPauses = (pcm: Uint8Array, maxMilliseconds: number): Readonl
   return pieces
 }
 
-// Wraps PCM in a WAV header.
 export const wav = (pcm: Uint8Array): Uint8Array<ArrayBuffer> => {
   const out = new Uint8Array(44 + pcm.length)
   const view = new DataView(out.buffer)

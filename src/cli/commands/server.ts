@@ -7,6 +7,7 @@ import { cliScript } from "../../paths.ts"
 import { Phonon } from "../../phonon/phonon.ts"
 import { PROVIDERS, type ProviderName } from "../../provider/provider.ts"
 import { transcriberFor } from "../../provider/transcriber.ts"
+import { Qwen } from "../../qwen/qwen.ts"
 import { startServer } from "../../server/server.ts"
 import { dictate, makeDictations } from "../../session/dictation.ts"
 import { transcribeFile, transcribePcm } from "../../session/transcribe-file.ts"
@@ -39,8 +40,8 @@ export const serverCommand = Command.make("serve", { port: Flag.Int("port").pipe
         Effect.gen(function* () {
           const provider = yield* currentProvider
           if (provider !== lastProvider) {
-            // OpenRouter needs no local model, so let go of its memory; keep it while the provider stays.
-            if (provider === "openrouter") yield* (yield* Phonon).stop
+            if (provider !== "phonon-2.5-en") yield* (yield* Phonon).stop
+            if (provider !== "qwen3-asr-1.7b") yield* (yield* Qwen).stop
             lastProvider = provider
           }
           const text = yield* run(provider)
@@ -48,13 +49,13 @@ export const serverCommand = Command.make("serve", { port: Flag.Int("port").pipe
         })
       ).pipe((effect) => lock.withPermit(effect))
 
-    // Called while the caller is still speaking, so the model loads meanwhile and a missing key is reported early.
-    const prepare = withLoginHint(
+    // Preparing participates in provider switching too, so an unused model cannot remain loaded.
+    const prepare = transcribing((provider) =>
       Effect.gen(function* () {
-        const transcriber = yield* transcriberFor(yield* currentProvider)
+        const transcriber = yield* transcriberFor(provider)
         yield* transcriber.prepare
       })
-    )
+    ).pipe(Effect.asVoid)
 
     const dictations = yield* makeDictations((stop, display) =>
       dictate(stop, display, { prepare, transcribe: (pcm) => transcribing((provider) => transcribePcm(pcm, provider)) })
