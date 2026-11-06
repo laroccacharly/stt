@@ -1,9 +1,8 @@
 import { Effect, Option, type FileSystem } from "effect"
-import type { Keyring } from "effect-lib/credentials"
 import type { JsonStoreError } from "effect-lib/json-store"
-import type { Stt } from "effect-lib/stt"
 import { Ffmpeg, type FfmpegError } from "../audio/ffmpeg.ts"
 import { isOwnWav, splitAtPauses, WAV_HEADER_BYTES } from "../audio/pcm.ts"
+import type { OpenRouter } from "../openrouter/openrouter.ts"
 import type { Phonon } from "../phonon/phonon.ts"
 import type { ProviderName } from "../provider/provider.ts"
 import { transcriberFor, type TranscribeError, type Transcriber } from "../provider/transcriber.ts"
@@ -26,7 +25,7 @@ const decode = (path: string) =>
 // Files are sent in pieces this long, since the models are built for short dictations.
 const PIECE_MS = 30_000
 
-type TranscribeServices = Phonon | Qwen | Stt | Keyring
+type TranscribeServices = Phonon | Qwen | OpenRouter
 
 const transcribePieces = (pcm: Uint8Array, transcriber: Transcriber) =>
   Effect.forEach(splitAtPauses(pcm, PIECE_MS), transcriber.transcribe).pipe(

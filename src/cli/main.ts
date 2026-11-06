@@ -2,7 +2,6 @@ import { BunServices } from "@effect/platform-bun"
 import { Layer, Logger } from "effect"
 import * as Credentials from "effect-lib/credentials"
 import * as FileLogger from "effect-lib/logger"
-import { ApiKey } from "effect-lib/stt"
 import { Command } from "effect/cli"
 import { SttClient } from "../../client/index.ts"
 import packageJson from "../../package.json" with { type: "json" }
@@ -11,8 +10,8 @@ import { Microphone } from "../audio/microphone.ts"
 import { Notifier } from "../desktop/notifier.ts"
 import { Paster } from "../desktop/paster.ts"
 import { History } from "../history/history.ts"
+import { ApiKey, OpenRouter } from "../openrouter/openrouter.ts"
 import { Phonon } from "../phonon/phonon.ts"
-import { openRouterLayer } from "../provider/openrouter.ts"
 import { Qwen } from "../qwen/qwen.ts"
 import { toggleCommand, toggleDictation, transcribeCommand } from "./commands/dictation.ts"
 import { historyCommand } from "./commands/history.ts"
@@ -50,7 +49,7 @@ const AppLive = Layer.mergeAll(
   Paster.layer,
   Phonon.layer,
   Qwen.layer,
-  openRouterLayer,
+  OpenRouter.layer,
   Layer.succeed(Logger.LogToStderr, true)
 ).pipe(
   Layer.provideMerge(History.layer.pipe(Layer.provide(Ffmpeg.layer))),
